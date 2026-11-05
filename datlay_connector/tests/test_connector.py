@@ -157,10 +157,10 @@ class TestDatlayConnector(TransactionCase):
         reader = self._reader()
         self.assertTrue(reader)
         self.assertFalse(reader.share)
-        self.assertEqual(
-            set(reader.groups_id.ids),
-            {self.env.ref("base.group_user").id, self.env.ref("datlay_connector.group_reader").id},
-        )
+        # on 17 groups_id holds the implied groups too: an internal user's own, and the reader's group, nothing more
+        user = self.env.ref("base.group_user")
+        reader_group = self.env.ref("datlay_connector.group_reader")
+        self.assertEqual(set(reader.groups_id.ids), set((user | user.trans_implied_ids | reader_group | reader_group.trans_implied_ids).ids))
         self.assertEqual(reader.company_ids, self.env["res.company"].search([]))
         key = self.keys.search([("user_id", "=", reader.id), ("name", "=", dc.KEY_NAME)])
         self.assertEqual(len(key), 1)
