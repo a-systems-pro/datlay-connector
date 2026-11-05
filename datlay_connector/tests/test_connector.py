@@ -160,7 +160,9 @@ class TestDatlayConnector(TransactionCase):
         # on 17 groups_id holds the implied groups too: an internal user's own, and the reader's group, nothing more
         user = self.env.ref("base.group_user")
         reader_group = self.env.ref("datlay_connector.group_reader")
-        expected = user | user.trans_implied_ids | reader_group | reader_group.trans_implied_ids
+        # Odoo 17 puts a user of several companies in "multi-company" by itself; it gives no right on a document
+        multi = self.env.ref("base.group_multi_company")
+        expected = user | user.trans_implied_ids | reader_group | reader_group.trans_implied_ids | multi
         extra = reader.groups_id - expected
         self.assertFalse(extra, "groups beyond an internal user's and the reader's: %s" % list(extra.get_external_id().values()))
         self.assertEqual(reader.company_ids, self.env["res.company"].search([]))
