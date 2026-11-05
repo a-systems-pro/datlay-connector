@@ -25,7 +25,7 @@ class TestDatlayConnector(TransactionCase):
         self.env["ir.config_parameter"].sudo().set_param("web.base.url", "https://odoo.example.com")
         self.posts = []
 
-        def fake_post(path, payload):
+        def fake_post(path, payload, timeout=None):
             self.posts.append((path, payload))
             if path.endswith("/lookup"):
                 return 200, {"tenant": "Acme", "owner": "owner@acme.example", "expiresAt": "2026-11-05T10:00:00Z"}
@@ -90,7 +90,7 @@ class TestDatlayConnector(TransactionCase):
         self.assertNotIn("datlay_connector.endpoint", self.env["ir.config_parameter"].sudo().search([]).mapped("key"))
 
     def test_03_an_unknown_code_makes_nothing(self):
-        self.post.side_effect = lambda path, payload: (404, {"error": "This code is not open"})
+        self.post.side_effect = lambda path, payload, *timeout: (404, {"error": "This code is not open"})
         wizard = self.env["datlay.connect.wizard"].create({"code": "WRONG"})
         with self.assertRaises(UserError):
             wizard.action_lookup()
@@ -124,7 +124,7 @@ class TestDatlayConnector(TransactionCase):
         now = self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)])
         self.assertEqual(len(now), 1)
         self.assertNotEqual(now, first)
-        self.assertEqual(self.env["datlay.connector.key"].search([]).mapped("apikey_id"), now.ids)
+        self.assertEqual(self.env["datlay.connector.key"].search([]).mapped("apikey_id"), now)
 
     def test_06_a_plain_address_is_refused_before_a_key_is_made(self):
         self.env["ir.config_parameter"].sudo().set_param("web.base.url", "http://odoo.example.com")
@@ -263,12 +263,82 @@ class TestDatlayConnector(TransactionCase):
         conn = self.connector._get()
         old_secret = conn.renew_secret
         old = self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)])
-        self.post.side_effect = lambda path, payload: (403, {"error": "the renewal secret does not match"})
+        self.post.side_effect = lambda path, payload, *timeout: (403, {"error": "the renewal secret does not match"})
         conn.action_renew()
         self._deliver()
         self.assertEqual(self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)]), old)
         self.assertEqual(conn.renew_secret, old_secret)
         self.assertIn("does not match", conn.last_answer)
+
+    def test_32_a_renewal_whose_answer_was_lost_is_settled_by_the_next(self):
+        self._wizard().action_connect()
+        self._sent("/datlay/odoo/connect/register")
+        conn = self.connector._get()
+        first_secret = conn.renew_secret
+        self.post.side_effect = lambda path, payload, *timeout: (0, {"error": "timed out"})
+        conn.action_renew()
+        self._deliver()
+        lost_next = conn.renew_secret_pending
+        self.assertTrue(lost_next)
+        self.assertEqual(conn.renew_secret, first_secret)
+        self.assertEqual(len(self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)])), 2)
+        # Datlay had taken the lost one: the current secret is refused, the pending one is Datlay's
+        tried = []
+
+        def datlay(path, payload, timeout=None):
+            tried.append(payload["renewSecret"])
+            if payload["renewSecret"] == lost_next:
+                return 200, {"connectionId": 1}
+            return 422, {"refusal": "renew", "error": "the renewal secret does not match"}
+
+        self.post.side_effect = datlay
+        conn.action_renew()
+        self._deliver()
+        self.assertEqual(tried, [first_secret, lost_next])
+        self.assertEqual(len(self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)])), 1)
+        self.assertFalse(conn.renew_secret_pending)
+        self.assertEqual(conn.state, "connected")
+
+    def test_33_renewal_is_offered_only_to_a_connection_datlay_took(self):
+        self.post.side_effect = lambda path, payload, *timeout: (
+            (200, {"tenant": "Acme", "owner": "o@a.example"}) if path.endswith("/lookup") else (503, {"error": "not queued"})
+        )
+        self._wizard().action_connect()
+        self._deliver()
+        conn = self.connector._get()
+        self.assertEqual(conn.state, "failed")
+        # the key it issued for the refused post is gone
+        self.assertFalse(self.keys.search([("user_id", "=", self.env.uid), ("name", "=", dc.KEY_NAME)]))
+        with self.assertRaises(UserError):
+            conn.action_renew()
+
+    def test_34_an_answer_that_is_not_a_json_object_is_text(self):
+        self.assertEqual(dc._answer("<html>maintenance</html>"), {"error": "<html>maintenance</html>"})
+        self.assertEqual(dc._answer("[1, 2]"), {"error": "[1, 2]"})
+        self.assertEqual(dc._answer('{"tenant": "Acme"}'), {"tenant": "Acme"})
+
+    def test_16_the_reader_sees_no_message_body_and_no_attachment(self):
+        reader = self._reader()
+        partner = self.env["res.partner"].create({"name": "Customer"})
+        target = partner
+        if "sale.order" in self.env:
+            target = self.env["sale.order"].create({"partner_id": partner.id})
+        chatter = self.env["mail.message"].sudo().create({
+            "model": target._name, "res_id": target.id, "message_type": "comment", "body": "<p>the price we agreed</p>",
+        })
+        attachment = self.env["ir.attachment"].sudo().create({
+            "name": "invoice.pdf", "res_model": target._name, "res_id": target.id, "raw": b"%PDF-1.4",
+        })
+        self.assertFalse(self.env["mail.message"].with_user(reader).search([("id", "=", chatter.id)]))
+        self.assertFalse(self.env["ir.attachment"].with_user(reader).search([("id", "=", attachment.id)]))
+
+    def test_17_a_reader_brought_back_is_archived_again_on_uninstall(self):
+        reader = self._reader()
+        reader.active = False
+        self.connector._get().reader_user_id = False
+        self._wizard("dedicated").action_connect()
+        self.assertTrue(reader.active)
+        self.assertEqual(self.connector._get().reader_user_id, reader)
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 

@@ -29,6 +29,8 @@ _logger = logging.getLogger(__name__)
 #: D14: the only address the module calls; there is no setting to change it (the tests replace ``_post``)
 DATLAY_CONNECT = "https://connect.datlay.io"
 TIMEOUT = 15
+#: a renewal waits for Datlay to sign in with the new key and read its rights, back in this same Odoo
+RENEW_TIMEOUT = 60
 #: D3, spec 9.6: Datlay reads the key's expiry by this name
 KEY_NAME = "Datlay"
 READER_LOGIN = "datlay.reader"
@@ -69,7 +71,8 @@ JOURNAL_TYPES = ("sale", "purchase", "cash", "bank", "credit")
 
 #: the reader's record rules, by model: the history kept to D5's documents and status fields, the journals kept
 READER_RULES = {
-    "mail.message": [("model", "in", list(HISTORY_OF))],
+    # D5: a status change's message only (its author and time), never a message body of the chatter or an e-mail
+    "mail.message": [("model", "in", list(HISTORY_OF)), ("tracking_value_ids", "!=", False)],
     "mail.tracking.value": [
         ("mail_message_id.model", "in", list(HISTORY_OF)),
         ("field_id.name", "in", list(STATUS_FIELDS)),
@@ -81,13 +84,27 @@ READER_RULES = {
         ("debit_move_id.journal_id.type", "in", list(JOURNAL_TYPES)),
         ("credit_move_id.journal_id.type", "in", list(JOURNAL_TYPES)),
     ],
+    # D5: never an attachment (an invoice's PDF), which every internal user reads on a record it reads
+    "ir.attachment": [(0, "=", 1)],
 }
 RULE_PREFIX = "Datlay reader: "
 ACCESS_PREFIX = "datlay_reader "
 
 
-def _post(path, payload):
-    """One JSON POST to Datlay's fixed address, certificates checked. Returns (HTTP status, answer as a dict)."""
+def _answer(raw):
+    """an answer as a dict: anything that is not a JSON object is kept as text, never raised"""
+    if not raw:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return {"error": raw[:300]}
+    return doc if isinstance(doc, dict) else {"error": raw[:300]}
+
+
+def _post(path, payload, timeout=TIMEOUT):
+    """One JSON POST to Datlay's fixed address, certificates checked. Returns (HTTP status, answer as a dict); a
+    network failure is status 0."""
     req = urlrequest.Request(
         url=DATLAY_CONNECT + path,
         data=json.dumps(payload).encode("utf-8"),
@@ -95,15 +112,10 @@ def _post(path, payload):
         method="POST",
     )
     try:
-        with urlrequest.urlopen(req, timeout=TIMEOUT, context=ssl.create_default_context()) as response:
-            raw = response.read().decode("utf-8")
-            return response.status, (json.loads(raw) if raw else {})
+        with urlrequest.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as response:
+            return response.status, _answer(response.read().decode("utf-8", errors="replace"))
     except HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        try:
-            return exc.code, json.loads(raw) if raw else {}
-        except ValueError:
-            return exc.code, {"error": raw[:300]}
+        return exc.code, _answer(exc.read().decode("utf-8", errors="replace") if exc.fp else "")
     except (URLError, OSError) as exc:
         _logger.warning("Datlay: %s not reached: %s", DATLAY_CONNECT, exc)
         return 0, {"error": str(getattr(exc, "reason", exc))}
@@ -118,7 +130,8 @@ class DatlayConnectorKey(models.Model):
     _name = "datlay.connector.key"
     _description = "API key issued by the Datlay module"
 
-    apikey_id = fields.Integer(required=True, index=True)
+    # a key its user deletes in Preferences takes this row with it
+    apikey_id = fields.Many2one("res.users.apikeys", required=True, index=True, ondelete="cascade")
     user_id = fields.Many2one("res.users", required=True, ondelete="cascade")
 
 
@@ -148,6 +161,8 @@ class DatlayConnector(models.Model):
     reader_user_id = fields.Many2one("res.users", "Datlay reader made here", readonly=True)
     key_expires = fields.Datetime("Key expires", readonly=True)
     renew_secret = fields.Char(groups="base.group_system", copy=False)
+    #: a renewal whose answer did not arrive: Datlay may hold this secret now, and is asked with it if the current fails
+    renew_secret_pending = fields.Char(groups="base.group_system", copy=False)
     sent_at = fields.Datetime(readonly=True)
     last_answer = fields.Char(readonly=True)
 
@@ -203,15 +218,14 @@ class DatlayConnector(models.Model):
         return key, row.id, expiry
 
     @api.model
-    def _drop_keys(self, keep=()):
-        """Deletes the keys the module issued, but those in ``keep``."""
-        issued = self.env["datlay.connector.key"].sudo().search([("apikey_id", "not in", list(keep))])
-        if not issued:
-            return
-        keys = self.env["res.users.apikeys"].sudo().browse(issued.mapped("apikey_id")).exists()
+    def _drop_keys(self, keep=(), only=None):
+        """Deletes the keys the module issued: all but those in ``keep``, or ``only`` these."""
+        domain = [("apikey_id", "in", list(only))] if only is not None else [("apikey_id", "not in", list(keep))]
+        issued = self.env["datlay.connector.key"].sudo().search(domain)
+        keys = issued.mapped("apikey_id").exists()
         if keys:
             keys._remove()
-        issued.unlink()
+        issued.exists().unlink()
 
     # ------------------------------------------------------------------ the Datlay reader
 
@@ -275,6 +289,9 @@ class DatlayConnector(models.Model):
         companies = self.env["res.company"].sudo().search([])
         reader = users.search([("login", "=", READER_LOGIN)], limit=1)
         if reader:
+            if not reader.active:
+                # brought back by the module (an earlier install made it): archived again on uninstall
+                self._get().reader_user_id = reader
             reader.write({
                 "active": True,
                 "group_ids": [Command.link(group.id)],
@@ -350,25 +367,30 @@ class DatlayConnector(models.Model):
         return conn
 
     def action_renew(self):
-        """D3: the key renewed in one click: a new one issued and sent with the renewal secret; the old one goes
-        only when Datlay took the new one, so a refused renewal never stops a working connection."""
+        """D3: the key renewed in one click: a new one issued and sent with the renewal secret. The old one goes only
+        once Datlay took the new one; a refusal deletes the new one; an answer that did not arrive keeps both."""
         self.ensure_one()
         self._check_admin()
         conn = self.sudo()
-        if not conn.renew_secret or not conn.key_user_id:
-            raise UserError(_("This Odoo was not connected through the module: connect it with a new code from Datlay."))
+        if conn.state not in ("sent", "connected") or not conn.renew_secret or not conn.key_user_id:
+            raise UserError(_("This Odoo is not connected through the module: connect it with a new code from Datlay."))
         kind = conn.reader_kind or "administrator"
         if kind == "dedicated":
             self._sync_reader_access()
         key, key_id, expiry = conn._issue_key(conn.key_user_id, kind)
         nxt = secrets.token_hex(32)
         payload = dict(conn._payload(conn.key_user_id, key, kind), renewSecret=conn.renew_secret, nextRenewSecret=nxt)
-        conn.write({"state": "sent", "sent_at": fields.Datetime.now(), "last_answer": False})
+        conn.write({"sent_at": fields.Datetime.now(), "last_answer": False})
         conn._send_after_commit(
             "/datlay/odoo/connect/renew",
             payload,
             "renew",
-            {"key_id": key_id, "next": nxt, "expiry": fields.Datetime.to_string(expiry) if expiry else False},
+            {
+                "key_id": key_id,
+                "next": nxt,
+                "pending": conn.renew_secret_pending or False,
+                "expiry": fields.Datetime.to_string(expiry) if expiry else False,
+            },
         )
         return True
 
@@ -386,38 +408,50 @@ class DatlayConnector(models.Model):
 
     def _deliver(self, path, payload, what, extra):
         """The post sent and what Datlay answered settled, in the cursor it is given (after the commit)."""
-        status, answer = _post(path, payload)
+        if what == "renew":
+            status, answer = _post(path, payload, RENEW_TIMEOUT)
+            if answer.get("refusal") == "renew" and extra.get("pending"):
+                # an earlier renewal's answer was lost and Datlay took it: its secret is the one Datlay holds
+                status, answer = _post(path, dict(payload, renewSecret=extra["pending"]), RENEW_TIMEOUT)
+        else:
+            status, answer = _post(path, payload)
         return self._after_post(what, status, answer, extra)
 
     def _after_post(self, what, status, answer, extra):
-        """What Datlay answered, kept on the record; a renewal's keys and secret settled by it."""
+        """What Datlay answered, kept on the record; the keys and the renewal secret settled by it."""
         self.ensure_one()
         words = answer.get("error") or ""
         if what == "register":
             ok = status == 202
+            if not ok:
+                # Datlay did not take it: the key just issued goes (a refusal after the 202 is told on Datlay's page)
+                self._drop_keys(only=[extra["key_id"]])
             self.write({
                 "state": "sent" if ok else "failed",
                 "last_answer": _("Datlay took the connection and is connecting it.") if ok else (words or str(status)),
             })
             return ok
-        ok = status == 200
-        if ok:
+        if status == 200:
             self._drop_keys(keep=[extra["key_id"]])
             self.write({
                 "state": "connected",
                 "renew_secret": extra["next"],
+                "renew_secret_pending": False,
                 "key_expires": extra.get("expiry") or False,
                 "last_answer": _("Datlay took the new key."),
             })
-        else:
-            # the new key goes, the working one stays
-            new = self.env["datlay.connector.key"].sudo().search([("apikey_id", "=", extra["key_id"])])
-            keys = self.env["res.users.apikeys"].sudo().browse(extra["key_id"]).exists()
-            if keys:
-                keys._remove()
-            new.unlink()
-            self.write({"state": "connected", "last_answer": words or str(status)})
-        return ok
+            return True
+        if status == 0 or status >= 500:
+            # no answer: Datlay may have taken it. Both keys stay, and the next renewal tries this secret too
+            self.write({
+                "renew_secret_pending": extra["next"],
+                "last_answer": _("Datlay's answer did not arrive (%s). Renew again to settle it.") % (words or status),
+            })
+            return False
+        # a refusal: the new key goes, the working one and the state stay
+        self._drop_keys(only=[extra["key_id"]])
+        self.write({"last_answer": words or str(status)})
+        return False
 
     # ------------------------------------------------------------------ D9: who holds another key
 
@@ -431,13 +465,13 @@ class DatlayConnector(models.Model):
         me = self.env.user
         if not (me._is_system() or me.has_group("datlay_connector.group_reader")):
             raise AccessError(_("Only Datlay's reader asks this."))
-        ids = [int(u) for u in (user_ids or [])][:20000]
-        issued = set(self.env["datlay.connector.key"].sudo().search([]).mapped("apikey_id"))
+        ids = [u for u in (user_ids or []) if isinstance(u, int) and not isinstance(u, bool)][:20000]
+        issued = self.env["datlay.connector.key"].sudo().search([]).mapped("apikey_id").ids
         keys = self.env["res.users.apikeys"].sudo()
-        domain = [("user_id", "in", ids)]
+        domain = [("user_id", "in", ids), ("id", "not in", issued)]
         if "expiration_date" in keys._fields:
             domain += ["|", ("expiration_date", "=", False), ("expiration_date", ">", fields.Datetime.now())]
-        holders = {k.user_id.id for k in keys.search(domain) if k.id not in issued}
+        holders = {row["user_id"][0] for row in keys.search_read(domain, ["user_id"]) if row["user_id"]}
         holders.discard(self.env.uid)
         return sorted(holders)
 

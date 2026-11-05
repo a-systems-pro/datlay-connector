@@ -7,7 +7,7 @@
             <form string="Datlay" create="false" delete="false">
                 <header>
                     <button name="%(datlay_connector.action_datlay_connect_wizard)d" type="action" string="Connect with a code" class="btn-primary"/>
-                    <button name="action_renew" type="object" string="Renew the key" invisible="state == 'draft' or not key_user_id"/>
+                    <button name="action_renew" type="object" string="Renew the key" invisible="state not in ('sent', 'connected') or not key_user_id"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
