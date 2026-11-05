@@ -87,6 +87,18 @@ READER_RULES = {
     # D5: never an attachment (an invoice's PDF), which every internal user reads on a record it reads
     "ir.attachment": [(0, "=", 1)],
 }
+#: D5: never an employee's record, a contract, a payslip or an expense, which Odoo lets an internal user read in part
+NEVER_READ = (
+    "hr.employee",
+    "hr.employee.public",
+    "hr.contract",
+    "hr.version",
+    "hr.payslip",
+    "hr.payslip.line",
+    "hr.expense",
+    "hr.expense.sheet",
+)
+READER_RULES.update({model: [(0, "=", 1)] for model in NEVER_READ})
 RULE_PREFIX = "Datlay reader: "
 ACCESS_PREFIX = "datlay_reader "
 

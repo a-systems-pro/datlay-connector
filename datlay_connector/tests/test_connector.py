@@ -332,6 +332,19 @@ class TestDatlayConnector(TransactionCase):
         self.assertFalse(self.env["mail.message"].with_user(reader).search([("id", "=", chatter.id)]))
         self.assertFalse(self.env["ir.attachment"].with_user(reader).search([("id", "=", attachment.id)]))
 
+    def test_18_the_reader_reads_no_employee_contract_or_payslip(self):
+        reader = self._reader()
+        present = [m for m in dc.NEVER_READ if m in self.env]
+        if not present:
+            self.skipTest("no HR app installed")
+        for model in present:
+            # no access at all, or nothing found: either way nothing is read
+            try:
+                found = self.env[model].with_user(reader).search([])
+            except AccessError:
+                found = self.env[model]
+            self.assertFalse(found, model)
+
     def test_17_a_reader_brought_back_is_archived_again_on_uninstall(self):
         reader = self._reader()
         reader.active = False
