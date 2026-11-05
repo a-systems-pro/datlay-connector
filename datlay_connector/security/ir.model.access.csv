@@ -1,0 +1,4 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_datlay_connector_admin,datlay.connector admin,model_datlay_connector,base.group_system,1,1,1,1
+access_datlay_connector_key_admin,datlay.connector.key admin,model_datlay_connector_key,base.group_system,1,0,0,0
+access_datlay_connect_wizard_admin,datlay.connect.wizard admin,model_datlay_connect_wizard,base.group_system,1,1,1,1

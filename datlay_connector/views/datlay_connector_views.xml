@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_datlay_connector_form" model="ir.ui.view">
+        <field name="name">datlay.connector.form</field>
+        <field name="model">datlay.connector</field>
+        <field name="arch" type="xml">
+            <form string="Datlay" create="false" delete="false">
+                <header>
+                    <button name="%(datlay_connector.action_datlay_connect_wizard)d" type="action" string="Connect with a code" class="btn-primary"/>
+                    <button name="action_renew" type="object" string="Renew the key" invisible="state == 'draft' or not key_user_id"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="tenant"/>
+                        <field name="owner"/>
+                        <field name="reader_kind"/>
+                        <field name="key_user_id"/>
+                        <field name="key_expires"/>
+                        <field name="reader_user_id"/>
+                        <field name="sent_at"/>
+                        <field name="last_answer"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_datlay_connector_open" model="ir.actions.server">
+        <field name="name">Datlay</field>
+        <field name="model_id" ref="model_datlay_connector"/>
+        <field name="state">code</field>
+        <field name="code">action = model.action_open()</field>
+        <field name="group_ids" eval="[Command.link(ref('base.group_system'))]"/>
+    </record>
+
+    <menuitem id="menu_datlay_root"
+              name="Datlay"
+              parent="base.menu_administration"
+              action="action_datlay_connector_open"
+              groups="base.group_system"
+              sequence="90"/>
+</odoo>

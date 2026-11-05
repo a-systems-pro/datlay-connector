@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_datlay_connect_wizard_form" model="ir.ui.view">
+        <field name="name">datlay.connect.wizard.form</field>
+        <field name="model">datlay.connect.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Connect to Datlay">
+                <field name="step" invisible="1"/>
+                <group invisible="step != 'code'">
+                    <div class="text-muted" colspan="2">
+                        In Datlay, start "Connect Odoo": it shows a code that is good once, for 30 minutes.
+                        Type it here. Nothing is made in this Odoo before you see whose account it is.
+                    </div>
+                    <field name="code" required="step == 'code'"/>
+                </group>
+                <group invisible="step != 'confirm'">
+                    <div class="alert alert-warning" role="alert" colspan="2">
+                        This connects your Odoo to the Datlay account of <field name="tenant" class="fw-bold"/>,
+                        started by <field name="owner" class="fw-bold"/>. Continue only if that is your account.
+                    </div>
+                    <field name="reader_kind" widget="radio"/>
+                    <div class="text-muted" colspan="2" invisible="reader_kind != 'administrator'">
+                        An administrator's API key can do everything its user can: write any document, and read HR
+                        and payroll. Datlay reads only the documents and their history with it, and its client has
+                        no way to write. You can delete the key at any time.
+                    </div>
+                    <div class="text-muted" colspan="2" invisible="reader_kind != 'dedicated'">
+                        The Datlay reader is a user that reads the documents and their history and cannot create,
+                        change or delete them. On Odoo Enterprise it takes one paid user. Like every internal user it
+                        can still post a message or plan an activity; Datlay never does.
+                    </div>
+                </group>
+                <group invisible="step != 'done'">
+                    <div colspan="2">
+                        Sent to Datlay. Datlay signs in, reads which documents the key can read, and connects; it
+                        writes nothing in this Odoo. Datlay's page shows the result.
+                    </div>
+                </group>
+                <footer>
+                    <button name="action_lookup" type="object" string="Check the code" class="btn-primary" invisible="step != 'code'"/>
+                    <button name="action_connect" type="object" string="Connect" class="btn-primary" invisible="step != 'confirm'"/>
+                    <button name="action_back" type="object" string="Another code" invisible="step != 'confirm'"/>
+                    <button special="cancel" string="Close"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_datlay_connect_wizard" model="ir.actions.act_window">
+        <field name="name">Connect to Datlay</field>
+        <field name="res_model">datlay.connect.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="group_ids" eval="[Command.link(ref('base.group_system'))]"/>
+    </record>
+</odoo>
