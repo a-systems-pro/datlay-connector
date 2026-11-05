@@ -3,11 +3,10 @@
     <!--
         329 D3: the Datlay reader's group. Its rights are read rights only, on the models Datlay reads, and they are
         written by the module for the apps this database has (models/datlay_connector.py, _sync_reader_access), since an
-        app not installed has no model to name here. A key of a user in it lives 90 days at most (Odoo 18 and later).
+        app not installed has no model to name here.
     -->
     <record id="group_reader" model="res.groups">
         <field name="name">Datlay reader</field>
         <field name="comment">Reads the documents Datlay reads and their history; creates, changes and deletes nothing.</field>
-        <field name="api_key_duration">90</field>
     </record>
 </odoo>

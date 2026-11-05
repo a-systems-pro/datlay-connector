@@ -1,4 +1,4 @@
-"""Spec 329 T-8 on Odoo 19.0: TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
+"""Spec 329 T-8 on Odoo 17.0: TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
 cannot create, write or unlink a document, and reads the history of D5's documents only)."""
 
@@ -153,18 +153,17 @@ class TestDatlayConnector(TransactionCase):
         self._wizard("dedicated").action_connect()
         return self.env["res.users"].search([("login", "=", dc.READER_LOGIN)])
 
-    def test_10_the_reader_is_made_internal_in_its_group_alone_with_a_key_of_90_days(self):
+    def test_10_the_reader_is_made_internal_in_its_group_alone_with_its_key(self):
         reader = self._reader()
         self.assertTrue(reader)
         self.assertFalse(reader.share)
         self.assertEqual(
-            set(reader.group_ids.ids),
+            set(reader.groups_id.ids),
             {self.env.ref("base.group_user").id, self.env.ref("datlay_connector.group_reader").id},
         )
         self.assertEqual(reader.company_ids, self.env["res.company"].search([]))
         key = self.keys.search([("user_id", "=", reader.id), ("name", "=", dc.KEY_NAME)])
         self.assertEqual(len(key), 1)
-        self.assertTrue(key.expiration_date)
         (payload,) = self._sent("/datlay/odoo/connect/register")
         self.assertEqual((payload["login"], payload["reader"]), (dc.READER_LOGIN, "dedicated"))
         self.assertEqual(self.connector._get().reader_user_id, reader)
@@ -174,11 +173,11 @@ class TestDatlayConnector(TransactionCase):
         present = [m for m in DOCUMENTS + LINES if m in self.env]
         for model in present:
             records = self.env[model].with_user(reader)
-            self.assertTrue(records.has_access("read"), model)
+            self.assertTrue(records.check_access_rights("read", raise_exception=False), model)
             for operation in ("write", "create", "unlink"):
-                self.assertFalse(records.has_access(operation), "%s %s" % (model, operation))
+                self.assertFalse(records.check_access_rights(operation, raise_exception=False), "%s %s" % (model, operation))
         for model in ("mail.tracking.value", "res.users.apikeys", "ir.model.fields"):
-            self.assertTrue(self.env[model].with_user(reader).has_access("read"), model)
+            self.assertTrue(self.env[model].with_user(reader).check_access_rights("read", raise_exception=False), model)
 
     def test_12_the_reader_reads_the_history_of_d5s_documents_only(self):
         reader = self._reader()

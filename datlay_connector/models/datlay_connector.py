@@ -17,7 +17,6 @@ import json
 import logging
 import secrets
 import ssl
-from datetime import timedelta
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
 
@@ -32,7 +31,7 @@ TIMEOUT = 15
 #: D3, spec 9.6: Datlay reads the key's expiry by this name
 KEY_NAME = "Datlay"
 READER_LOGIN = "datlay.reader"
-#: the Datlay reader's key lives within its group's duration (18 and later)
+#: the Datlay reader's key lives within its group's duration from 18; Odoo 17 keeps no expiry
 READER_KEY_DAYS = 90
 
 #: spec 329 D5 and 9.4: what the Datlay reader reads, the same list as Datlay's own (``domains.ts``)
@@ -91,7 +90,7 @@ def _post(path, payload):
     req = urlrequest.Request(
         url=DATLAY_CONNECT + path,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "datlay_connector/19.0 (Odoo module)"},
+        headers={"Content-Type": "application/json", "User-Agent": "datlay_connector/17.0 (Odoo module)"},
         method="POST",
     )
     try:
@@ -187,14 +186,13 @@ class DatlayConnector(models.Model):
 
     @api.model
     def _generate_key(self, user, expiry):
+        # Odoo 17: (scope, name); a key has no expiry before 18
         keys = self.env["res.users.apikeys"].with_user(user).sudo()
-        return keys._generate("rpc", KEY_NAME, expiry or None)
+        return keys._generate("rpc", KEY_NAME)
 
     def _issue_key(self, user, kind):
         """D3: a key named "Datlay" for this user, recorded as the module's own. Returns (key, its id, expiry)."""
         expiry = False
-        if kind == "dedicated":
-            expiry = fields.Datetime.now() + timedelta(days=READER_KEY_DAYS)
         key = self._generate_key(user, expiry)
         row = self.env["res.users.apikeys"].sudo().search(
             [("user_id", "=", user.id), ("name", "=", KEY_NAME)], order="id desc", limit=1
@@ -277,14 +275,14 @@ class DatlayConnector(models.Model):
         if reader:
             reader.write({
                 "active": True,
-                "group_ids": [Command.link(group.id)],
+                "groups_id": [Command.link(group.id)],
                 "company_ids": [Command.set(companies.ids)],
             })
             return reader
         reader = users.create({
             "name": "Datlay reader",
             "login": READER_LOGIN,
-            "group_ids": [Command.set([self.env.ref("base.group_user").id, group.id])],
+            "groups_id": [Command.set([self.env.ref("base.group_user").id, group.id])],
             "company_id": self.env.company.id,
             "company_ids": [Command.set(companies.ids)],
         })
@@ -293,7 +291,7 @@ class DatlayConnector(models.Model):
 
     @api.model
     def _reader_users(self):
-        return self._reader_group().sudo().user_ids
+        return self._reader_group().sudo().users
 
     # ------------------------------------------------------------------ connecting
 
