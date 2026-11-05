@@ -15,8 +15,8 @@ on:
 env:
   MODULE: datlay_connector
   DEPENDS: ""
-  # the apps whose documents Datlay reads, installed beside it for the reader's rights
-  WITH: sale_management,purchase,stock,crm,account
+  # the apps whose documents Datlay reads, and HR, which it never reads, installed beside it for the reader's rights
+  WITH: sale_management,purchase,stock,crm,account,hr
 
 jobs:
   odoo:
