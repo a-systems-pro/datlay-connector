@@ -1,6 +1,7 @@
 """Spec 329 T-8 on Odoo 17.0: TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
-cannot create, write or unlink a document, and reads the history of D5's documents only)."""
+cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
+project and no private one, no person's own stage, no timesheet line, an MO and its history."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -14,7 +15,9 @@ POST = "odoo.addons.datlay_connector.models.datlay_connector._post"
 #: the real ones, kept before any test replaces them
 REAL_POST = dc._post
 REAL_SEND = dc.DatlayConnector._send_after_commit
-DOCUMENTS = ("sale.order", "purchase.order", "stock.picking", "account.move", "account.payment", "crm.lead")
+DOCUMENTS = ("sale.order", "purchase.order", "stock.picking", "account.move", "account.payment", "crm.lead", "project.task", "mrp.production", "helpdesk.ticket")
+#: spec 453: the tables a task's, an MO's and a ticket's statuses and links are read from
+TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage")
 LINES = ("sale.order.line", "purchase.order.line", "account.move.line")
 
 
@@ -180,7 +183,7 @@ class TestDatlayConnector(TransactionCase):
             self.assertTrue(records.check_access_rights("read", raise_exception=False), model)
             for operation in ("write", "create", "unlink"):
                 self.assertFalse(records.check_access_rights(operation, raise_exception=False), "%s %s" % (model, operation))
-        for model in ("mail.tracking.value", "res.users.apikeys", "ir.model.fields"):
+        for model in ("mail.tracking.value", "res.users.apikeys", "ir.model.fields") + tuple(m for m in TABLES if m in self.env):
             self.assertTrue(self.env[model].with_user(reader).check_access_rights("read", raise_exception=False), model)
 
     def test_12_the_reader_reads_the_history_of_d5s_documents_only(self):
@@ -355,6 +358,62 @@ class TestDatlayConnector(TransactionCase):
         self._wizard("dedicated").action_connect()
         self.assertTrue(reader.active)
         self.assertEqual(self.connector._get().reader_user_id, reader)
+
+    # -------------------------------------------------------------- spec 453: making and services
+
+    def test_50_the_reader_reads_every_projects_tasks_and_no_private_one(self):
+        if "project.task" not in self.env:
+            self.skipTest("projects are not installed")
+        reader = self._reader()
+        clerk = new_test_user(self.env, login="datlay_clerk4", groups="base.group_user")
+        hidden = self.env["project.project"].create({"name": "Followers only", "privacy_visibility": "followers"})
+        task = self.env["project.task"].create({"name": "Work", "project_id": hidden.id})
+        # a private task has no project: a person's own note
+        private = self.env["project.task"].create({"name": "Mine", "user_ids": [(6, 0, [clerk.id])]})
+        self.assertFalse(private.project_id)
+        tasks = self.env["project.task"].with_user(reader)
+        self.assertEqual(tasks.search([("id", "=", task.id)]), task)
+        self.assertFalse(tasks.search([("id", "=", private.id)]))
+        self.assertEqual(self.env["project.project"].with_user(reader).search([("id", "=", hidden.id)]), hidden)
+
+    def test_51_the_reader_sees_no_persons_own_stage(self):
+        if "project.task.type" not in self.env or "user_id" not in self.env["project.task.type"]._fields:
+            self.skipTest("no personal stages")
+        reader = self._reader()
+        clerk = new_test_user(self.env, login="datlay_clerk5", groups="base.group_user")
+        personal = self.env["project.task.type"].create({"name": "My own", "user_id": clerk.id})
+        shared = self.env["project.task.type"].create({"name": "Shared"})
+        stages = self.env["project.task.type"].with_user(reader)
+        self.assertFalse(stages.search([("id", "=", personal.id)]))
+        self.assertEqual(stages.search([("id", "=", shared.id)]), shared)
+
+    def test_52_the_reader_reads_no_timesheet_line(self):
+        if "account.analytic.line" not in self.env:
+            self.skipTest("analytic accounting is not installed")
+        reader = self._reader()
+        plan = self.env["account.analytic.plan"].create({"name": "Datlay test plan"})
+        account = self.env["account.analytic.account"].create({"name": "Datlay test", "plan_id": plan.id})
+        line = self.env["account.analytic.line"].create({"name": "Two hours", "account_id": account.id, "unit_amount": 2})
+        try:
+            found = self.env["account.analytic.line"].with_user(reader).search([("id", "=", line.id)])
+        except AccessError:
+            found = self.env["account.analytic.line"]
+        self.assertFalse(found)
+
+    def test_53_the_reader_reads_an_mo_and_its_history(self):
+        if "mrp.production" not in self.env:
+            self.skipTest("manufacturing is not installed")
+        reader = self._reader()
+        product = self.env["product.product"].create({"name": "Table", "type": "consu"})
+        mo = self.env["mrp.production"].create({"product_id": product.id, "product_qty": 1, "product_uom_id": product.uom_id.id})
+        self.assertEqual(self.env["mrp.production"].with_user(reader).search([("id", "=", mo.id)]), mo)
+        message = self.env["mail.message"].sudo().create({"model": "mrp.production", "res_id": mo.id, "message_type": "notification"})
+        for name, old, new in (("state", "draft", "confirmed"), ("reservation_state", "confirmed", "assigned")):
+            field = self.env["ir.model.fields"]._get("mrp.production", name)
+            value = self.env["mail.tracking.value"].sudo().create({
+                "field_id": field.id, "mail_message_id": message.id, "old_value_char": old, "new_value_char": new,
+            })
+            self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "=", value.id)]), value, name)
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 
