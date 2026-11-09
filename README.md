@@ -17,8 +17,8 @@ What it does in your Odoo, and nothing else:
   the new one.
 - **Cleans up on uninstall:** the keys it issued are deleted and the reader it made is archived.
 
-It holds none of your data. The Datlay reader can still post a message or plan an activity, as every internal Odoo
-user can; Datlay never does.
+It holds none of your data. The Datlay reader can still post a message, plan an activity or keep a to-do, as every
+internal Odoo user can; Datlay never does.
 
 Derived from Rteam's AI Analytic Assistant module (its API key issuing and its CI). LGPL-3.
 
