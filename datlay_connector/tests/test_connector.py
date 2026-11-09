@@ -18,6 +18,8 @@ REAL_SEND = dc.DatlayConnector._send_after_commit
 DOCUMENTS = ("sale.order", "purchase.order", "stock.picking", "account.move", "account.payment", "crm.lead", "project.task", "mrp.production", "helpdesk.ticket")
 #: spec 453: the tables a task's, an MO's and a ticket's statuses and links are read from
 TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage")
+#: models every internal user may write by Odoo's own rights: a task (project_todo's to-dos)
+EVERY_USER_WRITES = ("project.task",)
 LINES = ("sale.order.line", "purchase.order.line", "account.move.line")
 
 
@@ -181,6 +183,10 @@ class TestDatlayConnector(TransactionCase):
         for model in present:
             records = self.env[model].with_user(reader)
             self.assertTrue(records.check_access_rights("read", raise_exception=False), model)
+            # project_todo (installed with project from 17) gives every internal user its own to-dos: a task's write
+            # right is every internal user's, the reader's group adds none (test_15)
+            if model in EVERY_USER_WRITES:
+                continue
             for operation in ("write", "create", "unlink"):
                 self.assertFalse(records.check_access_rights(operation, raise_exception=False), "%s %s" % (model, operation))
         for model in ("mail.tracking.value", "res.users.apikeys", "ir.model.fields") + tuple(m for m in TABLES if m in self.env):
@@ -382,7 +388,10 @@ class TestDatlayConnector(TransactionCase):
         reader = self._reader()
         clerk = new_test_user(self.env, login="datlay_clerk5", groups="base.group_user")
         personal = self.env["project.task.type"].create({"name": "My own", "user_id": clerk.id})
-        shared = self.env["project.task.type"].create({"name": "Shared"})
+        # a stage made outside a project is its maker's own (Odoo's default): a project's stage is shared
+        project = self.env["project.project"].create({"name": "Shared stages"})
+        shared = self.env["project.task.type"].create({"name": "Shared", "project_ids": [(6, 0, [project.id])]})
+        self.assertFalse(shared.user_id)
         stages = self.env["project.task.type"].with_user(reader)
         self.assertFalse(stages.search([("id", "=", personal.id)]))
         self.assertEqual(stages.search([("id", "=", shared.id)]), shared)
