@@ -15,8 +15,9 @@ on:
 env:
   MODULE: datlay_connector
   DEPENDS: ""
-  # the apps whose documents Datlay reads, and HR, which it never reads, installed beside it for the reader's rights
-  WITH: sale_management,purchase,stock,crm,account,hr
+  # the apps whose documents Datlay reads, and HR, which it never reads, installed beside it for the reader's rights;
+  # spec 453: manufacturing, projects and timesheets (helpdesk is Enterprise, checked on its stand)
+  WITH: sale_management,purchase,stock,crm,account,hr,mrp,sale_mrp,project,sale_timesheet
 
 jobs:
   odoo:
