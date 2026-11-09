@@ -9,8 +9,9 @@ What it does in your Odoo, and nothing else:
   belongs to, and makes nothing before you say yes.
 - **Reads with one of two keys.** Your own administrator's API key named "Datlay" (it can do everything you can; Datlay
   reads only the documents and their history with it), or the **Datlay reader**: a user the module makes in a group of
-  its own that reads sales, purchases, transfers, invoices, payments and deals and their history, and cannot create,
-  change or delete them. On Odoo Enterprise the reader takes one paid user.
+  its own that reads sales, purchases, transfers, invoices, payments, deals, tasks, manufacturing orders and helpdesk
+  tickets and their history, and cannot create, change or delete them. It never reads a timesheet line, a private task
+  or a person's own stage. On Odoo Enterprise the reader takes one paid user.
 - **Calls one address only:** `https://connect.datlay.io`, certificates checked. There is no setting to change it.
 - **Renews the key in one click** (Settings > Datlay > Renew the key). The old key is deleted only once Datlay took
   the new one.
@@ -23,6 +24,7 @@ Derived from Rteam's AI Analytic Assistant module (its API key issuing and its C
 
 ## Tests
 
-`.github/workflows/tests.yml` installs the module beside Sales, Purchase, Inventory, CRM and Accounting on a fresh
+`.github/workflows/tests.yml` installs the module beside Sales, Purchase, Inventory, CRM, Accounting, Manufacturing,
+Project and Timesheets on a fresh
 database and runs its tests; Datlay is a mock there. Locally: `odoo-skills/scripts/stand.sh test 19.0
 datlay_connector,sale_management,purchase,stock,crm,account . --tags /datlay_connector`.

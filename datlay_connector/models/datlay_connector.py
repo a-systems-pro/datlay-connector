@@ -62,10 +62,30 @@ READ_MODELS = (
     "stock.location",
     "stock.picking.type",
     "res.users.apikeys",
+    # spec 453 D6: making and services, and the tables their statuses and links are read from; a model this database
+    # lacks is skipped (an MO's order through procurement.group to 18, stock.reference from 19; helpdesk is Enterprise)
+    "project.task",
+    "mrp.production",
+    "helpdesk.ticket",
+    "project.project",
+    "project.task.type",
+    "procurement.group",
+    "stock.reference",
+    "helpdesk.stage",
 )
-#: D7: the documents whose history is read, and their status fields
-HISTORY_OF = ("crm.lead", "sale.order", "purchase.order", "stock.picking", "account.move", "account.payment")
-STATUS_FIELDS = ("state", "payment_state", "stage_id", "active", "won_status", "lost_reason", "lost_reason_id")
+#: D7: the documents whose history is read, and their status fields (453: an MO's components readiness too)
+HISTORY_OF = (
+    "crm.lead",
+    "sale.order",
+    "purchase.order",
+    "stock.picking",
+    "account.move",
+    "account.payment",
+    "project.task",
+    "mrp.production",
+    "helpdesk.ticket",
+)
+STATUS_FIELDS = ("state", "payment_state", "stage_id", "active", "won_status", "lost_reason", "lost_reason_id", "reservation_state")
 #: D3, spec 9.11: the journals read; payroll and miscellaneous ones (``general``) never
 JOURNAL_TYPES = ("sale", "purchase", "cash", "bank", "credit")
 
@@ -86,9 +106,19 @@ READER_RULES = {
     ],
     # D5: never an attachment (an invoice's PDF), which every internal user reads on a record it reads
     "ir.attachment": [(0, "=", 1)],
+    # spec 453 D7: Odoo's task_visibility_rule and project_public_members_rule hide a followers-only project from an
+    # internal user, and group rules add up: the reader sees every project's tasks, and still no private task (no
+    # project), no other person's own stage
+    "project.task": [("project_id", "!=", False)],
+    "project.project": [(1, "=", 1)],
+    "project.task.type": [("user_id", "=", False)],
+    # helpdesk_ticket_user_rule hides a team its members are invited to (Enterprise)
+    "helpdesk.ticket": [(1, "=", 1)],
 }
 #: D5: never an employee's record, a contract, a payslip or an expense, which Odoo lets an internal user read in part
 NEVER_READ = (
+    # spec 453 D3: a timesheet line names a person and their day; a task's own hours are its sums
+    "account.analytic.line",
     "hr.employee",
     "hr.employee.public",
     "hr.contract",
