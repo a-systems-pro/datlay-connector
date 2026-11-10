@@ -89,7 +89,11 @@ STATUS_FIELDS = ("state", "payment_state", "stage_id", "active", "won_status", "
 #: D3, spec 9.11: the journals read; payroll and miscellaneous ones (``general``) never
 JOURNAL_TYPES = ("sale", "purchase", "cash", "bank", "credit")
 
-#: the reader's record rules, by model: the history kept to D5's documents and status fields, the journals kept
+#: Odoo 20 (spec 329 §9 item 19): accesses and record rules are one model, ``ir.access``. A group's accesses add up
+#: (OR) and a restriction, an access of no group, binds every user (AND). So what only the reader may not read is a
+#: restriction whose domain names the reader's group (``_reader_only``), and the reader's own accesses can only widen
+#: what Odoo's groups give an internal user.
+#: the reader's restrictions, by model: the history kept to D5's documents and status fields, the journals kept
 READER_RULES = {
     # D5: a status change's message only (its author and time), never a message body of the chatter or an e-mail
     "mail.message": [("model", "in", list(HISTORY_OF)), ("tracking_value_ids", "!=", False)],
@@ -106,14 +110,14 @@ READER_RULES = {
     ],
     # D5: never an attachment (an invoice's PDF), which every internal user reads on a record it reads
     "ir.attachment": [(0, "=", 1)],
-    # spec 453 D7: Odoo's task_visibility_rule and project_public_members_rule hide a followers-only project from an
-    # internal user, and group rules add up: the reader sees every project's tasks, and still no private task (no
-    # project), no other person's own stage
+}
+#: the reader's own accesses with a domain, by model (every other model of READ_MODELS: all of it). Spec 453 D7: Odoo's
+#: task and project visibility hide a followers-only project from an internal user, and a group's accesses add up: the
+#: reader sees every project's tasks, and still no private task (no project), no other person's own stage; helpdesk's
+#: user access hides a team its members are invited to (Enterprise)
+READER_PERMISSIONS = {
     "project.task": [("project_id", "!=", False)],
-    "project.project": [(1, "=", 1)],
     "project.task.type": [("user_id", "=", False)],
-    # helpdesk_ticket_user_rule hides a team its members are invited to (Enterprise)
-    "helpdesk.ticket": [(1, "=", 1)],
 }
 #: D5: never an employee's record, a contract, a payslip or an expense, which Odoo lets an internal user read in part
 NEVER_READ = (
@@ -131,6 +135,11 @@ NEVER_READ = (
 READER_RULES.update({model: [(0, "=", 1)] for model in NEVER_READ})
 RULE_PREFIX = "Datlay reader: "
 ACCESS_PREFIX = "datlay_reader "
+
+
+def _reader_only(group_id, domain):
+    """a restriction's domain that binds the reader's group alone: every other user reads as before"""
+    return "%r if %d in user.all_group_ids.ids else []" % (domain, group_id)
 
 
 def _answer(raw):
@@ -232,7 +241,7 @@ class DatlayConnector(models.Model):
 
     @api.model
     def _base_url(self):
-        url = (self.env["ir.config_parameter"].sudo().get_param("web.base.url") or "").rstrip("/")
+        url = (self.env["ir.config_parameter"].sudo().get_str("web.base.url") or "").rstrip("/")
         if not url.startswith("https://"):
             raise UserError(_(
                 "This Odoo's address (web.base.url, %s) is not an https address: Datlay calls only https. "
@@ -277,51 +286,53 @@ class DatlayConnector(models.Model):
 
     @api.model
     def _sync_reader_access(self):
-        """D3: the reader's group reads every model of the list this database has, and its rules hold.
+        """D3: the reader's group reads every model of the list this database has, and its restrictions hold.
 
-        Read only: no row of this group can create, write or unlink. Run at install, at connecting, at renewal and
+        Read only: no access of this group can create, update or delete. Run at install, at connecting, at renewal and
         daily, so an app installed later is read too.
         """
         group = self._reader_group().sudo()
-        access = self.env["ir.model.access"].sudo()
+        access = self.env["ir.access"].sudo().with_context(active_test=False)
         ir_model = self.env["ir.model"].sudo()
+        # a right given to the group by hand is taken back: the group reads, and only that
+        access.search([("group_id", "=", group.id), ("operation", "!=", "r")]).write({"operation": "r"})
         for model in READ_MODELS:
             if model not in self.env:
                 continue
             model_id = ir_model._get_id(model)
-            row = access.search([("group_id", "=", group.id), ("model_id", "=", model_id)], limit=1)
+            domain = READER_PERMISSIONS.get(model)
             values = {
                 "name": ACCESS_PREFIX + model,
                 "model_id": model_id,
                 "group_id": group.id,
-                "perm_read": True,
-                "perm_write": False,
-                "perm_create": False,
-                "perm_unlink": False,
+                "operation": "r",
+                "domain": repr(domain) if domain else False,
+                "active": True,
             }
+            row = access.search([("group_id", "=", group.id), ("model_id", "=", model_id), ("name", "=", values["name"])], limit=1)
             if row:
-                if row.perm_write or row.perm_create or row.perm_unlink or not row.perm_read:
+                if (row.domain or False) != values["domain"] or not row.active:
                     row.write(values)
             else:
                 access.create(values)
-        rules = self.env["ir.rule"].sudo()
         for model, domain in READER_RULES.items():
             if model not in self.env:
                 continue
             model_id = ir_model._get_id(model)
-            name = RULE_PREFIX + model
             values = {
-                "name": name,
+                "name": RULE_PREFIX + model,
                 "model_id": model_id,
-                "domain_force": repr(domain),
-                "groups": [Command.set([group.id])],
+                "group_id": False,
+                "operation": "r",
+                "domain": _reader_only(group.id, domain),
+                "active": True,
             }
-            row = rules.with_context(active_test=False).search([("name", "=", name), ("model_id", "=", model_id)], limit=1)
+            row = access.search([("name", "=", values["name"]), ("model_id", "=", model_id), ("group_id", "=", False)], limit=1)
             if row:
-                if row.domain_force != values["domain_force"] or row.groups != group or not row.active:
-                    row.write({**values, "active": True})
+                if row.domain != values["domain"] or row.operation != "r" or not row.active:
+                    row.write(values)
             else:
-                rules.create(values)
+                access.create(values)
 
     @api.model
     def _ensure_reader(self):
@@ -374,7 +385,7 @@ class DatlayConnector(models.Model):
             "login": user.login,
             "key": key,
             "reader": kind,
-            "uuid": icp.get_param("database.uuid"),
+            "uuid": icp.get_str("database.uuid"),
             "taxNumber": normalised_tax_number(self.env.company.vat),
         }
 
@@ -528,9 +539,10 @@ class DatlayConnector(models.Model):
     def _uninstall_cleanup(self):
         self._drop_keys(keep=[])
         group = self.env.ref("datlay_connector.group_reader", raise_if_not_found=False)
-        self.env["ir.rule"].sudo().with_context(active_test=False).search([("name", "=like", RULE_PREFIX + "%")]).unlink()
+        access = self.env["ir.access"].sudo().with_context(active_test=False)
+        access.search([("name", "=like", RULE_PREFIX + "%"), ("group_id", "=", False)]).unlink()
         if group:
-            self.env["ir.model.access"].sudo().search([("group_id", "=", group.id)]).unlink()
+            access.search([("group_id", "=", group.id)]).unlink()
         made = self.sudo().search([]).mapped("reader_user_id")
         if made:
             made.write({"active": False})

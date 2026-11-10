@@ -1,4 +1,4 @@
-"""Spec 329 T-8 on Odoo 19.0: TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
+"""Spec 329 T-8 on Odoo 20.0 (329b: accesses and rules are one ``ir.access``): TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
 cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
 project and no private one, no person's own stage, no timesheet line, an MO and its history."""
@@ -27,7 +27,7 @@ LINES = ("sale.order.line", "purchase.order.line", "account.move.line")
 class TestDatlayConnector(TransactionCase):
     def setUp(self):
         super().setUp()
-        self.env["ir.config_parameter"].sudo().set_param("web.base.url", "https://odoo.example.com")
+        self.env["ir.config_parameter"].sudo().set_str("web.base.url", "https://odoo.example.com")
         self.posts = []
 
         def fake_post(path, payload, timeout=None):
@@ -115,9 +115,10 @@ class TestDatlayConnector(TransactionCase):
         self.assertEqual(payload["database"], self.env.cr.dbname)
         self.assertEqual(payload["login"], self.env.user.login)
         self.assertEqual(payload["reader"], "administrator")
-        self.assertRegex(payload["key"], r"^[0-9a-f]{40}$")
+        # Odoo 20 appends `_oak` to a key (`API_KEY_SUFFIX`), which Datlay takes as Odoo's shape
+        self.assertRegex(payload["key"], r"^[0-9a-f]{40}_oak$")
         self.assertRegex(payload["renewSecret"], r"^[0-9a-f]{64}$")
-        self.assertEqual(payload["uuid"], self.env["ir.config_parameter"].sudo().get_param("database.uuid"))
+        self.assertEqual(payload["uuid"], self.env["ir.config_parameter"].sudo().get_str("database.uuid"))
         conn = self.connector._get()
         self.assertEqual(conn.state, "sent")
         self.assertEqual(conn.renew_secret, payload["renewSecret"])
@@ -132,7 +133,7 @@ class TestDatlayConnector(TransactionCase):
         self.assertEqual(self.env["datlay.connector.key"].search([]).mapped("apikey_id"), now)
 
     def test_06_a_plain_address_is_refused_before_a_key_is_made(self):
-        self.env["ir.config_parameter"].sudo().set_param("web.base.url", "http://odoo.example.com")
+        self.env["ir.config_parameter"].sudo().set_str("web.base.url", "http://odoo.example.com")
         wizard = self._wizard()
         keys_before = self.keys.search_count([])
         with self.assertRaises(UserError):
@@ -210,16 +211,23 @@ class TestDatlayConnector(TransactionCase):
             self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "=", shown.id)]), shown)
 
     def test_13_the_rules_keep_payroll_and_miscellaneous_journals_out(self):
-        self._reader()
+        reader = self._reader()
         if "account.move" not in self.env:
             self.skipTest("accounting is not installed")
-        rules = self.env["ir.rule"].search([("name", "=like", dc.RULE_PREFIX + "%")])
+        group = self.env.ref("datlay_connector.group_reader")
+        rules = self.env["ir.access"].search([("name", "=like", dc.RULE_PREFIX + "%")])
         by_model = {r.model_id.model: r for r in rules}
         for model in ("account.move", "account.move.line", "account.payment", "account.partial.reconcile"):
             self.assertIn(model, by_model)
-            self.assertNotIn("general", by_model[model].domain_force)
-            self.assertIn("journal_id.type", by_model[model].domain_force)
-            self.assertEqual(by_model[model].groups, self.env.ref("datlay_connector.group_reader"))
+            self.assertNotIn("general", by_model[model].domain)
+            self.assertIn("journal_id.type", by_model[model].domain)
+            # a restriction (no group), whose domain binds the reader's group alone
+            self.assertFalse(by_model[model].group_id)
+            self.assertIn("%d in user.all_group_ids.ids" % group.id, by_model[model].domain)
+        # it binds the reader and nobody else: an accountant's reads keep every journal
+        accountant = new_test_user(self.env, login="datlay_accountant", groups="base.group_user,account.group_account_manager")
+        self.assertIn("journal_id.type", str(self.env["account.move"].with_user(reader)._access_domain("read")))
+        self.assertNotIn("journal_id.type", str(self.env["account.move"].with_user(accountant)._access_domain("read")))
 
     def test_14_a_company_made_later_joins_the_reader(self):
         reader = self._reader()
@@ -229,13 +237,13 @@ class TestDatlayConnector(TransactionCase):
     def test_15_the_group_never_gets_a_write_right(self):
         self._reader()
         group = self.env.ref("datlay_connector.group_reader")
-        access = self.env["ir.model.access"].search([("group_id", "=", group.id)])
+        access = self.env["ir.access"].search([("group_id", "=", group.id)])
         self.assertTrue(access)
-        self.assertFalse(access.filtered(lambda a: a.perm_write or a.perm_create or a.perm_unlink))
+        self.assertFalse(access.filtered(lambda a: a.for_write or a.for_create or a.for_unlink))
         # a write right given by hand is taken back by the next sync
-        access[:1].perm_write = True
+        access[:1].operation = "ru"
         self.connector._sync_reader_access()
-        self.assertFalse(access.filtered(lambda a: a.perm_write))
+        self.assertFalse(access.filtered(lambda a: a.for_write))
 
     # -------------------------------------------------------------- D9
 
@@ -411,7 +419,7 @@ class TestDatlayConnector(TransactionCase):
             self.skipTest("manufacturing is not installed")
         reader = self._reader()
         product = self.env["product.product"].create({"name": "Table", "type": "consu"})
-        mo = self.env["mrp.production"].create({"product_id": product.id, "product_qty": 1, "product_uom_id": product.uom_id.id})
+        mo = self.env["mrp.production"].create({"product_id": product.id, "product_qty": 1, "uom_id": product.uom_id.id})
         self.assertEqual(self.env["mrp.production"].with_user(reader).search([("id", "=", mo.id)]), mo)
         message = self.env["mail.message"].sudo().create({"model": "mrp.production", "res_id": mo.id, "message_type": "notification"})
         for name, old, new in (("state", "draft", "confirmed"), ("reservation_state", "confirmed", "assigned")):
@@ -432,7 +440,7 @@ class TestDatlayConnector(TransactionCase):
         self.assertFalse(self.keys.search([("user_id", "=", reader.id)]))
         self.assertTrue(theirs.exists(), "a key the module did not issue stays")
         self.assertFalse(reader.active)
-        self.assertFalse(self.env["ir.rule"].with_context(active_test=False).search([("name", "=like", dc.RULE_PREFIX + "%")]))
+        self.assertFalse(self.env["ir.access"].with_context(active_test=False).search([("name", "=like", dc.RULE_PREFIX + "%")]))
         group = self.env.ref("datlay_connector.group_reader")
-        self.assertFalse(self.env["ir.model.access"].search([("group_id", "=", group.id)]))
+        self.assertFalse(self.env["ir.access"].with_context(active_test=False).search([("group_id", "=", group.id)]))
 

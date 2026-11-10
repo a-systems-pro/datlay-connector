@@ -1,6 +1,8 @@
 # Datlay Connector
 
-Connects an Odoo database to [Datlay](https://datlay.com), by a-systems. Odoo 17.0 and 19.0 (one branch each).
+Connects an Odoo database to [Datlay](https://datlay.com), by a-systems. Odoo 17.0, 19.0 and 20.0 (one branch each). On 20.0 it installs Discuss Tracking
+(`mail_tracking`) with itself: Odoo 20 keeps the status history only with it, so Datlay reads the history from the day it is
+installed.
 
 What it does in your Odoo, and nothing else:
 
@@ -26,5 +28,5 @@ Derived from Rteam's AI Analytic Assistant module (its API key issuing and its C
 
 `.github/workflows/tests.yml` installs the module beside Sales, Purchase, Inventory, CRM, Accounting, Manufacturing,
 Project and Timesheets on a fresh
-database and runs its tests; Datlay is a mock there. Locally: `odoo-skills/scripts/stand.sh test 19.0
-datlay_connector,sale_management,purchase,stock,crm,account . --tags /datlay_connector`.
+database and runs its tests; Datlay is a mock there. Locally: `odoo-skills/scripts/stand.sh test 20.0
+datlay_connector,sale_management,purchase,stock,crm,account . --tags /datlay_connector` (`--enterprise` for helpdesk).
