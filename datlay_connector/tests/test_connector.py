@@ -425,15 +425,18 @@ class TestDatlayConnector(TransactionCase):
             self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "=", value.id)]), value, name)
 
     def test_54_the_reader_finds_an_mos_order_through_the_move_it_was_made_for(self):
-        """Spec 453c: to 18 an MO's own procurement group names no order; the move it was made for does, an order's
-        delivery here, and the reader reads that link and the group's order, ids only."""
+        """Spec 453c: to 18 an MO's own procurement group names no order; the move it was made for does, by its group
+        (an order's delivery here), and the reader reads that link, the group's order and a group's MOs, ids only."""
         if "mrp.production" not in self.env or "sale_id" not in self.env["procurement.group"]._fields:
             self.skipTest("manufacturing or sales with inventory is not installed")
         reader = self._reader()
         product = self.env["product.product"].create({"name": "Table", "type": "consu"})
         order = self.env["sale.order"].create({"partner_id": self.env["res.partner"].create({"name": "Buyer"}).id})
         group = self.env["procurement.group"].create({"name": order.name, "sale_id": order.id})
-        mo = self.env["mrp.production"].create({"product_id": product.id, "product_qty": 1, "product_uom_id": product.uom_id.id})
+        own = self.env["procurement.group"].create({"name": "Its own group"})
+        mo = self.env["mrp.production"].create({
+            "product_id": product.id, "product_qty": 1, "product_uom_id": product.uom_id.id, "procurement_group_id": own.id,
+        })
         move = self.env["stock.move"].create({
             "name": "Table",
             "product_id": product.id,
@@ -446,8 +449,10 @@ class TestDatlayConnector(TransactionCase):
         })
         moves = self.env["stock.move"].with_user(reader)
         self.assertFalse(moves.check_access_rights("write", raise_exception=False))
-        found = moves.search_read([("created_production_id", "=", mo.id)], ["group_id", "raw_material_production_id"], load=None)
-        self.assertEqual(found, [{"id": move.id, "group_id": group.id, "raw_material_production_id": False}])
+        found = moves.search_read([("created_production_id", "=", mo.id)], ["created_production_id", "group_id"], load=None)
+        self.assertEqual(found, [{"id": move.id, "created_production_id": mo.id, "group_id": group.id}])
+        # a group's MOs, as Datlay finds an MO's backorders and a component's parent
+        self.assertEqual(self.env["mrp.production"].with_user(reader).search([("procurement_group_id", "=", own.id)]), mo)
         groups = self.env["procurement.group"].with_user(reader).search_read([("id", "=", group.id)], ["sale_id"], load=None)
         self.assertEqual(groups, [{"id": group.id, "sale_id": order.id}])
 
