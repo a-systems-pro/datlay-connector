@@ -17,7 +17,7 @@ REAL_POST = dc._post
 REAL_SEND = dc.DatlayConnector._send_after_commit
 DOCUMENTS = ("sale.order", "purchase.order", "stock.picking", "account.move", "account.payment", "crm.lead", "project.task", "mrp.production", "helpdesk.ticket")
 #: spec 453: the tables a task's, an MO's and a ticket's statuses and links are read from
-TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage")
+TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage", "stock.move")
 #: models every internal user may write by Odoo's own rights: a task (project_todo's to-dos)
 EVERY_USER_WRITES = ("project.task",)
 LINES = ("sale.order.line", "purchase.order.line", "account.move.line")
@@ -423,6 +423,38 @@ class TestDatlayConnector(TransactionCase):
                 "field_id": field.id, "mail_message_id": message.id, "old_value_char": old, "new_value_char": new,
             })
             self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "=", value.id)]), value, name)
+
+    def test_54_the_reader_finds_an_mos_order_through_the_move_it_was_made_for(self):
+        """Spec 453c: to 18 an MO's own procurement group names no order; the move it was made for does, by its group
+        (an order's delivery here), and the reader reads that link, the group's order and a group's MOs, ids only."""
+        if "mrp.production" not in self.env or "sale_id" not in self.env["procurement.group"]._fields:
+            self.skipTest("manufacturing or sales with inventory is not installed")
+        reader = self._reader()
+        product = self.env["product.product"].create({"name": "Table", "type": "consu"})
+        order = self.env["sale.order"].create({"partner_id": self.env["res.partner"].create({"name": "Buyer"}).id})
+        group = self.env["procurement.group"].create({"name": order.name, "sale_id": order.id})
+        own = self.env["procurement.group"].create({"name": "Its own group"})
+        mo = self.env["mrp.production"].create({
+            "product_id": product.id, "product_qty": 1, "product_uom_id": product.uom_id.id, "procurement_group_id": own.id,
+        })
+        move = self.env["stock.move"].create({
+            "name": "Table",
+            "product_id": product.id,
+            "product_uom_qty": 1,
+            "product_uom": product.uom_id.id,
+            "location_id": self.env.ref("stock.stock_location_stock").id,
+            "location_dest_id": self.env.ref("stock.stock_location_customers").id,
+            "group_id": group.id,
+            "created_production_id": mo.id,
+        })
+        moves = self.env["stock.move"].with_user(reader)
+        self.assertFalse(moves.check_access_rights("write", raise_exception=False))
+        found = moves.search_read([("created_production_id", "=", mo.id)], ["created_production_id", "group_id"], load=None)
+        self.assertEqual(found, [{"id": move.id, "created_production_id": mo.id, "group_id": group.id}])
+        # a group's MOs, as Datlay finds an MO's backorders and a component's parent
+        self.assertEqual(self.env["mrp.production"].with_user(reader).search([("procurement_group_id", "=", own.id)]), mo)
+        groups = self.env["procurement.group"].with_user(reader).search_read([("id", "=", group.id)], ["sale_id"], load=None)
+        self.assertEqual(groups, [{"id": group.id, "sale_id": order.id}])
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 
