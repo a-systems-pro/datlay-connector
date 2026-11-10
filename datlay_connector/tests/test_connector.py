@@ -163,10 +163,12 @@ class TestDatlayConnector(TransactionCase):
         reader = self._reader()
         self.assertTrue(reader)
         self.assertFalse(reader.share)
-        self.assertEqual(
-            set(reader.group_ids.ids),
-            {self.env.ref("base.group_user").id, self.env.ref("datlay_connector.group_reader").id},
-        )
+        # an internal user's group and the reader's; Odoo 20, as 17, puts a user of several companies in
+        # "multi-company" by itself, which gives no right on a document
+        expected = {self.env.ref("base.group_user").id, self.env.ref("datlay_connector.group_reader").id}
+        if len(reader.company_ids) > 1:
+            expected.add(self.env.ref("base.group_multi_company").id)
+        self.assertEqual(set(reader.group_ids.ids), expected)
         self.assertEqual(reader.company_ids, self.env["res.company"].search([]))
         key = self.keys.search([("user_id", "=", reader.id), ("name", "=", dc.KEY_NAME)])
         self.assertEqual(len(key), 1)
