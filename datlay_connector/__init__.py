@@ -10,6 +10,7 @@ def post_init_hook(env):
 def uninstall_hook(env):
     """329 D14: the keys the module issued are deleted, the reader it made is archived, its rights and rules go.
 
-    Runs before Odoo removes the module's records: a rule whose group is gone would apply to everyone.
+    Runs before Odoo removes the module's records. On 20 a restriction left behind would bind nobody (its domain names
+    the reader's group, which goes); it is removed all the same, and the group's own accesses with it.
     """
     env["datlay.connector"]._uninstall_cleanup()

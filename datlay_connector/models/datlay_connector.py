@@ -23,6 +23,7 @@ from urllib.error import HTTPError, URLError
 
 from odoo import SUPERUSER_ID, Command, _, api, fields, models
 from odoo.exceptions import AccessError, UserError
+from odoo.fields import Domain
 
 _logger = logging.getLogger(__name__)
 
@@ -100,6 +101,9 @@ READER_RULES = {
     "mail.tracking.value": [
         ("mail_message_id.model", "in", list(HISTORY_OF)),
         ("field_id.name", "in", list(STATUS_FIELDS)),
+        # 329b review: on 20 a tracked value is read through its message, so never of a document the reader cannot read
+        # (a payroll entry, a private task): Odoo 20's ``access`` condition
+        ("mail_message_id", "access", "read"),
     ],
     "account.move": [("journal_id.type", "in", list(JOURNAL_TYPES))],
     "account.move.line": [("journal_id.type", "in", list(JOURNAL_TYPES))],
@@ -116,8 +120,11 @@ READER_RULES = {
 #: reader sees every project's tasks, and still no private task (no project), no other person's own stage; helpdesk's
 #: user access hides a team its members are invited to (Enterprise)
 READER_PERMISSIONS = {
+    # 329b review: Odoo's own access to a message is "of a document you read" (``base.group_everyone``); the reader's
+    # adds up with it, so it carries the same condition and never more
+    "mail.message": [("res_access_read", "=", True)],
     "project.task": [("project_id", "!=", False)],
-    "project.task.type": [("user_id", "=", False)],
+    # no other person's own stage: Odoo 20's own restriction says it for everyone (``task_type_visibility_rule``)
 }
 #: D5: never an employee's record, a contract, a payslip or an expense, which Odoo lets an internal user read in part
 NEVER_READ = (
@@ -294,8 +301,13 @@ class DatlayConnector(models.Model):
         group = self._reader_group().sudo()
         access = self.env["ir.access"].sudo().with_context(active_test=False)
         ir_model = self.env["ir.model"].sudo()
-        # a right given to the group by hand is taken back: the group reads, and only that
-        access.search([("group_id", "=", group.id), ("operation", "!=", "r")]).write({"operation": "r"})
+        # a right given to the group by hand is taken back: the group reads, and only that. An access that also reads
+        # keeps its reading; one that never read goes, so taking a right back never gives a read (329b review)
+        for row in access.search([("group_id", "=", group.id), ("operation", "!=", "r")]):
+            if "r" in row.operation:
+                row.operation = "r"
+            else:
+                row.unlink()
         for model in READ_MODELS:
             if model not in self.env:
                 continue
@@ -318,6 +330,9 @@ class DatlayConnector(models.Model):
         for model, domain in READER_RULES.items():
             if model not in self.env:
                 continue
+            # Odoo checks a restriction's domain as the user who writes it, for whom ``_reader_only`` gives [] and so
+            # nothing: the reader's own domain is checked here, so a path a version lacks fails the sync, not a read
+            Domain(domain).validate(self.env[model].sudo())
             model_id = ir_model._get_id(model)
             values = {
                 "name": RULE_PREFIX + model,

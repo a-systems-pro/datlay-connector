@@ -231,6 +231,27 @@ class TestDatlayConnector(TransactionCase):
         self.assertIn("journal_id.type", str(self.env["account.move"].with_user(reader)._access_domain("read")))
         self.assertNotIn("journal_id.type", str(self.env["account.move"].with_user(accountant)._access_domain("read")))
 
+    def test_19_the_reader_reads_no_history_of_a_document_it_cannot_read(self):
+        """329b review: on 20 a tracked value is read through its message, and a message through its document"""
+        if "project.task" not in self.env:
+            self.skipTest("projects are not installed")
+        reader = self._reader()
+        project = self.env["project.project"].create({"name": "Datlay Seen"})
+        seen = self.env["project.task"].create({"name": "In a project", "project_id": project.id})
+        hidden = self.env["project.task"].create({"name": "A person's own", "project_id": False})
+        self.assertFalse(self.env["project.task"].with_user(reader).search([("id", "=", hidden.id)]))
+        field = self.env["ir.model.fields"]._get("project.task", "stage_id")
+        values = {}
+        for task in (seen, hidden):
+            message = self.env["mail.message"].sudo().create({"model": "project.task", "res_id": task.id, "message_type": "notification"})
+            values[task] = self.env["mail.tracking.value"].sudo().create({
+                "field_id": field.id, "mail_message_id": message.id, "old_value_char": "New", "new_value_char": "Done",
+            })
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        self.assertEqual(Tracking.search([("id", "=", values[seen].id)]), values[seen])
+        self.assertFalse(Tracking.search([("id", "=", values[hidden].id)]))
+        self.assertFalse(self.env["mail.message"].with_user(reader).search([("model", "=", "project.task"), ("res_id", "=", hidden.id)]))
+
     def test_14_a_company_made_later_joins_the_reader(self):
         reader = self._reader()
         company = self.env["res.company"].create({"name": "Later Ltd"})
@@ -246,6 +267,12 @@ class TestDatlayConnector(TransactionCase):
         access[:1].operation = "ru"
         self.connector._sync_reader_access()
         self.assertFalse(access.filtered(lambda a: a.for_write))
+        # and one that never read goes, rather than becoming a read (329b review)
+        partner_bank = self.env["ir.model"]._get_id("res.partner.bank")
+        given = self.env["ir.access"].create({"name": "by hand", "model_id": partner_bank, "group_id": group.id, "operation": "c"})
+        self.connector._sync_reader_access()
+        self.assertFalse(given.exists())
+        self.assertFalse(self.env["ir.access"].search([("group_id", "=", group.id), ("model_id", "=", partner_bank)]))
 
     # -------------------------------------------------------------- D9
 
