@@ -71,6 +71,9 @@ READ_MODELS = (
     "procurement.group",
     "stock.reference",
     "helpdesk.stage",
+    # spec 453c: to 18 an MO's own procurement group names no order; the move it was made for does (an order's delivery,
+    # or a parent MO's component). Datlay reads only those links of a move, never its product or quantity
+    "stock.move",
 )
 #: D7: the documents whose history is read, and their status fields (453: an MO's components readiness too)
 HISTORY_OF = (
