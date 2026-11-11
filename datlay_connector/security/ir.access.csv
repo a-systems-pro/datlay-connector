@@ -1,0 +1,4 @@
+id,name,model_id,group_id/id,operation,domain
+access_datlay_connector_admin,datlay.connector admin,datlay.connector,base.group_system,crud,
+access_datlay_connector_key_admin,datlay.connector.key admin,datlay.connector.key,base.group_system,r,
+access_datlay_connect_wizard_admin,datlay.connect.wizard admin,datlay.connect.wizard,base.group_system,crud,
