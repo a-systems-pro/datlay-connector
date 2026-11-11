@@ -1,15 +1,20 @@
 """Spec 329 T-8 on Odoo 20.0 (329b: accesses and rules are one ``ir.access``): TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
 cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
-project and no private one, no person's own stage, no timesheet line, an MO and its history."""
+project and no private one, no person's own stage, no timesheet line, an MO and its history. 329 §9 item 21: the history
+read on a database past Odoo 20's 10,000 messages."""
 
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+from odoo import fields
 from odoo.exceptions import AccessError, UserError
 from odoo.tests.common import TransactionCase, new_test_user, tagged
+from odoo.tools import SQL
 
 from odoo.addons.datlay_connector.models import datlay_connector as dc
+from odoo.addons.mail.models.mail_message import MAX_SEARCH_LIMIT
 
 POST = "odoo.addons.datlay_connector.models.datlay_connector._post"
 #: the real ones, kept before any test replaces them
@@ -457,6 +462,75 @@ class TestDatlayConnector(TransactionCase):
                 "field_id": field.id, "mail_message_id": message.id, "old_value_char": old, "new_value_char": new,
             })
             self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "=", value.id)]), value, name)
+
+    # -------------------------------------------------------------- 329 §9 item 21: a database of many messages
+
+    def _bulk_history(self, record, field, count):
+        """``count`` status changes of ``record``, each a message of its own with one tracked value, written in one
+        statement (the ORM takes minutes for that many), by the administrator: never the reader's own messages"""
+        self.env.flush_all()
+        self.env.cr.execute(SQL(
+            """
+            WITH message AS (
+                INSERT INTO mail_message (model, res_id, message_type, author_id, date,
+                                          create_uid, create_date, write_uid, write_date)
+                SELECT %(model)s, %(res_id)s, 'notification', %(author)s, %(now)s, %(uid)s, %(now)s, %(uid)s, %(now)s
+                  FROM generate_series(1, %(count)s)
+                RETURNING id
+            )
+            INSERT INTO mail_tracking_value (field_id, mail_message_id, old_value_char, new_value_char,
+                                             create_uid, create_date, write_uid, write_date)
+            SELECT %(field)s, id, 'old', 'new', %(uid)s, %(now)s, %(uid)s, %(now)s FROM message
+            RETURNING id
+            """,
+            model=record._name, res_id=record.id, author=self.env.user.partner_id.id, uid=self.env.uid,
+            now=fields.Datetime.now(), count=count, field=field.id,
+        ))
+        ids = sorted(row[0] for row in self.env.cr.fetchall())
+        self.env.invalidate_all()
+        return self.env["mail.tracking.value"].browse(ids)
+
+    def test_60_the_history_is_read_on_a_database_of_many_messages(self):
+        """Odoo 20 refuses a search of messages of more than five models once it meets 10,000 of them
+        (``MAX_SEARCH_LIMIT``: "Too many messages to be processed"): the reader reads the history there all the same,
+        with every search the platform sends, and still none of a document it cannot read"""
+        if "sale.order" not in self.env or "project.task" not in self.env:
+            self.skipTest("sales or projects are not installed")
+        reader = self._reader()
+        since = fields.Datetime.now() - timedelta(minutes=1)
+        order = self.env["sale.order"].create({"partner_id": self.env["res.partner"].create({"name": "Many"}).id})
+        state = self.env["ir.model.fields"]._get("sale.order", "state")
+        many = MAX_SEARCH_LIMIT + 100
+        shown = self._bulk_history(order, state, many)
+        # a person's own task: its history never reaches the reader, however many messages are around it
+        private = self.env["project.task"].create({"name": "Mine", "project_id": False})
+        stage = self.env["ir.model.fields"]._get("project.task", "stage_id")
+        hidden = self._bulk_history(private, stage, 3)
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        asked = ["field_id", "old_value_char", "new_value_char", "mail_message_id", "create_date"]
+        for scope in ("mail_message_id.model", "field_id.model"):
+            with self.subTest(scope=scope):
+                kept = [(scope, "in", list(dc.HISTORY_OF))]
+                # the platform's first question: where the history starts
+                self.assertTrue(Tracking.search_read(kept, ["create_date"], limit=1, order="id asc"))
+                domain = kept + [("field_id", "in", [state.id, stage.id]), ("create_date", ">=", since)]
+                # its pages, 500 rows each, by the tracking row's id
+                read, cursor = [], 0
+                while True:
+                    rows = Tracking.search_read(domain + [("id", ">", cursor)], asked, limit=500, order="id asc")
+                    read += [row["id"] for row in rows]
+                    if len(rows) < 500:
+                        break
+                    cursor = rows[-1]["id"]
+                self.assertEqual(read, shown.ids)
+                self.assertFalse(set(read) & set(hidden.ids))
+                self.assertEqual(Tracking.search_count(domain), many)
+        # the messages of a page, by id, kept to D5's documents as the platform keeps them
+        messages = shown[:200].mapped("mail_message_id") | hidden.mapped("mail_message_id")
+        got = self.env["mail.message"].with_user(reader).search_read(
+            [("model", "in", list(dc.HISTORY_OF)), ("id", "in", messages.ids)], ["model", "res_id", "author_id", "date"],
+        )
+        self.assertEqual(sorted(m["id"] for m in got), shown[:200].mapped("mail_message_id").ids)
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 
