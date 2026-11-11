@@ -41,8 +41,7 @@ DEADLINE_FIELDS = {
     "helpdesk.ticket": ("priority", "team_id", "sla_reached_late", "sla_reached", "sla_fail", "first_response_hours"),
     "res.company": ("currency_id",),
 }
-#: an order's delivery and a purchase's receipt status are Inventory's
-WITH_INVENTORY = ("delivery_status", "receipt_status")
+#: on 20 an order's delivery status is Sales' own and a purchase's receipt status Purchase's (Inventory's to 19)
 #: spec 465 D14: a component move and the purchase line it waits on, ids and numbers only
 MOVE_FIELDS = ("raw_material_production_id", "product_id", "product_uom_qty", "quantity", "state", "created_purchase_line_ids")
 PURCHASE_LINE_FIELDS = ("product_id", "product_qty", "qty_received", "date_planned", "state")
@@ -627,7 +626,7 @@ class TestDatlayConnector(TransactionCase):
             if model not in self.env:
                 continue
             fields = self.env[model]._fields
-            missing = [n for n in names if n not in fields and not (n in WITH_INVENTORY and "stock.picking" not in self.env)]
+            missing = [n for n in names if n not in fields]
             self.assertFalse(missing, "%s has no %s on this version" % (model, missing))
             # a field closed by its groups refuses the read itself, whatever the records
             self.env[model].with_user(reader).search_read([], [n for n in names if n in fields], limit=1, load=None)
