@@ -35,6 +35,7 @@ RENEW_TIMEOUT = 60
 #: D3, spec 9.6: Datlay reads the key's expiry by this name
 KEY_NAME = "Datlay"
 READER_LOGIN = "datlay.reader"
+READER_GROUP = "datlay_connector.group_reader"
 #: the Datlay reader's key lives within its group's duration (18 and later)
 READER_KEY_DAYS = 90
 
@@ -102,7 +103,7 @@ READER_RULES = {
         ("mail_message_id.model", "in", list(HISTORY_OF)),
         ("field_id.name", "in", list(STATUS_FIELDS)),
         # 329b review: on 20 a tracked value is read through its message, so never of a document the reader cannot read
-        # (a payroll entry, a private task): Odoo 20's ``access`` condition
+        # (a payroll entry, a private task): Odoo 20's ``access`` condition, asked model by model (mail_message.py)
         ("mail_message_id", "access", "read"),
     ],
     "account.move": [("journal_id.type", "in", list(JOURNAL_TYPES))],
@@ -289,7 +290,7 @@ class DatlayConnector(models.Model):
 
     @api.model
     def _reader_group(self):
-        return self.env.ref("datlay_connector.group_reader")
+        return self.env.ref(READER_GROUP)
 
     @api.model
     def _sync_reader_access(self):
@@ -531,7 +532,7 @@ class DatlayConnector(models.Model):
         administrators only, so this one boolean per user is all that leaves.
         """
         me = self.env.user
-        if not (me._is_system() or me.has_group("datlay_connector.group_reader")):
+        if not (me._is_system() or me.has_group(READER_GROUP)):
             raise AccessError(_("Only Datlay's reader asks this."))
         ids = [u for u in (user_ids or []) if isinstance(u, int) and not isinstance(u, bool)][:20000]
         issued = self.env["datlay.connector.key"].sudo().search([]).mapped("apikey_id").ids
@@ -553,7 +554,7 @@ class DatlayConnector(models.Model):
     @api.model
     def _uninstall_cleanup(self):
         self._drop_keys(keep=[])
-        group = self.env.ref("datlay_connector.group_reader", raise_if_not_found=False)
+        group = self.env.ref(READER_GROUP, raise_if_not_found=False)
         access = self.env["ir.access"].sudo().with_context(active_test=False)
         access.search([("name", "=like", RULE_PREFIX + "%"), ("group_id", "=", False)]).unlink()
         if group:
