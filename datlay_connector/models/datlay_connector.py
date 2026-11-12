@@ -74,6 +74,18 @@ READ_MODELS = (
     "procurement.group",
     "stock.reference",
     "helpdesk.stage",
+    # spec 465 D14 (Alex 11-11): the purchase behind a waiting MO. An MO's component moves, their product as an id,
+    # their quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name
+    "stock.move",
+    # spec 465 D3: the names of a deal's lost reason, a deal's or an order's source, a sales or a helpdesk team (names
+    # only, kept with the connection like the status labels; helpdesk is Enterprise)
+    "crm.lost.reason",
+    "utm.source",
+    "crm.team",
+    "helpdesk.team",
+    # spec 465 D8.2: Odoo's own Cancelled stage of helpdesk is known by its external id (``helpdesk.stage_cancelled``);
+    # the reader reads the external ids of helpdesk stages and of no other model (READER_RULES)
+    "ir.model.data",
 )
 #: D7: the documents whose history is read, and their status fields (453: an MO's components readiness too)
 HISTORY_OF = (
@@ -115,6 +127,9 @@ READER_RULES = {
     ],
     # D5: never an attachment (an invoice's PDF), which every internal user reads on a record it reads
     "ir.attachment": [(0, "=", 1)],
+    # spec 465 D8.2: a helpdesk stage's external id, never another model's (a module's records, a user's groups). Odoo
+    # reads the table itself as superuser (env.ref, an external id's lookup), and ``_reader_only`` binds no other user
+    "ir.model.data": [("model", "=", "helpdesk.stage")],
 }
 #: the reader's own accesses with a domain, by model (every other model of READ_MODELS: all of it). Spec 453 D7: Odoo's
 #: task and project visibility hide a followers-only project from an internal user, and a group's accesses add up: the

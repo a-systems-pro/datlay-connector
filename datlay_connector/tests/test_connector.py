@@ -2,13 +2,17 @@
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
 cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
 project and no private one, no person's own stage, no timesheet line, an MO and its history. 329 §9 item 21: the history
-read on a database past Odoo 20's 10,000 messages."""
+read on a database past Odoo 20's 10,000 messages. Spec 465b: the names of reasons, sources and teams, helpdesk stages'
+external ids and no other, the deadlines on the documents, and the purchase behind a waiting MO (D14), ids and numbers
+only."""
 
+import importlib.util
 import json
+import os
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
-from odoo import fields
+from odoo import Command, fields
 from odoo.exceptions import AccessError, UserError
 from odoo.tests.common import TransactionCase, new_test_user, tagged
 from odoo.tools import SQL
@@ -22,10 +26,27 @@ REAL_POST = dc._post
 REAL_SEND = dc.DatlayConnector._send_after_commit
 DOCUMENTS = ("sale.order", "purchase.order", "stock.picking", "account.move", "account.payment", "crm.lead", "project.task", "mrp.production", "helpdesk.ticket")
 #: spec 453: the tables a task's, an MO's and a ticket's statuses and links are read from
-TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage")
+TABLES = ("project.project", "project.task.type", "procurement.group", "stock.reference", "helpdesk.stage", "stock.move")
 #: models every internal user may write by Odoo's own rights: a task (project_todo's to-dos)
 EVERY_USER_WRITES = ("project.task",)
 LINES = ("sale.order.line", "purchase.order.line", "account.move.line")
+#: spec 465 D3: the tables whose names are read (helpdesk is Enterprise)
+NAMES = ("crm.lost.reason", "utm.source", "crm.team", "helpdesk.team")
+#: spec 465 D3: the deadlines and the facts beside them, on documents the reader already reads
+DEADLINE_FIELDS = {
+    "crm.lead": ("date_deadline", "probability", "source_id", "team_id", "lost_reason_id"),
+    "sale.order": ("validity_date", "commitment_date", "delivery_status", "invoice_status", "source_id", "team_id"),
+    "purchase.order": ("date_planned", "receipt_status", "invoice_status"),
+    "account.move": ("invoice_date_due",),
+    "helpdesk.ticket": ("priority", "team_id", "sla_reached_late", "sla_reached", "sla_fail", "first_response_hours"),
+    "res.company": ("currency_id",),
+}
+#: on 20 an order's delivery status is Sales' own and a purchase's receipt status Purchase's (Inventory's to 19)
+#: spec 465 D14: a component move and the purchase line it waits on, ids and numbers only
+MOVE_FIELDS = ("raw_material_production_id", "product_id", "product_uom_qty", "quantity", "state", "created_purchase_line_ids")
+PURCHASE_LINE_FIELDS = ("product_id", "product_qty", "qty_received", "date_planned", "state")
+#: the version whose end migration gives an installed database the reader's new rights at its update
+MIGRATION = "20.0.1.2.0"
 
 
 @tagged("post_install", "-at_install")
@@ -531,6 +552,186 @@ class TestDatlayConnector(TransactionCase):
             [("model", "in", list(dc.HISTORY_OF)), ("id", "in", messages.ids)], ["model", "res_id", "author_id", "date"],
         )
         self.assertEqual(sorted(m["id"] for m in got), shown[:200].mapped("mail_message_id").ids)
+
+    # -------------------------------------------------------------- spec 465b: the deadlines are read
+
+    def _reads_as_the_administrator(self, reader, records, names):
+        """the reader reads these fields of these records, ids only (``load=None``), as the administrator does"""
+        domain = [("id", "in", records.ids)]
+        mine = self.env[records._name].with_user(reader).search_read(domain, list(names), load=None)
+        self.assertEqual(mine, records.search_read(domain, list(names), load=None), records._name)
+        self.assertEqual(sorted(row["id"] for row in mine), sorted(records.ids), records._name)
+        return mine
+
+    def test_70_the_reader_reads_the_names_of_reasons_sources_and_teams(self):
+        """Spec 465 D3: a deal's lost reason, a deal's or an order's source, a sales or a helpdesk team, by name"""
+        reader = self._reader()
+        clerk = new_test_user(self.env, login="datlay_clerk6", groups="base.group_user")
+        present = [m for m in NAMES if m in self.env]
+        if not present:
+            self.skipTest("neither CRM nor Sales is installed")
+        for model in present:
+            record = self.env[model].create({"name": "Datlay %s" % model})
+            self._reads_as_the_administrator(reader, record, ["name"])
+            # the module gives no write right: the reader's are an internal user's (Odoo lets every one add a source)
+            for operation in ("write", "create", "unlink"):
+                self.assertEqual(
+                    self.env[model].with_user(reader).has_access(operation),
+                    self.env[model].with_user(clerk).has_access(operation),
+                    "%s %s" % (model, operation),
+                )
+            if model != "utm.source":
+                self.assertFalse(self.env[model].with_user(reader).has_access("write"), model)
+
+    def test_71_the_reader_reads_the_external_ids_of_helpdesk_stages_only(self):
+        """Spec 465 D8.2: Odoo's own Cancelled stage of helpdesk is known by its external id: the reader reads the
+        external ids of helpdesk stages and of no other model; Odoo's own lookups and every other user are untouched"""
+        reader = self._reader()
+        Data = self.env["ir.model.data"]
+        # a helpdesk stage's row, made here where helpdesk is not installed (a row names its model by name)
+        stage = Data.create({"module": "datlay_test", "name": "a_stage", "model": "helpdesk.stage", "res_id": 1})
+        theirs = Data.search([("module", "=", "base"), ("name", "in", ("main_partner", "main_company", "group_user"))])
+        self.assertEqual(len(theirs), 3)
+        mine = Data.with_user(reader)
+        self.assertTrue(mine.has_access("read"))
+        rows = mine.search_read([("id", "in", (stage | theirs).ids)], ["module", "name", "model", "res_id"])
+        self.assertEqual(rows, [{"id": stage.id, "module": "datlay_test", "name": "a_stage", "model": "helpdesk.stage", "res_id": 1}])
+        self.assertEqual(set(mine.search([]).mapped("model")), {"helpdesk.stage"})
+        self.assertFalse(mine.search_count([("model", "=", "res.partner")]))
+        with self.assertRaises(AccessError):
+            theirs.with_user(reader).read(["name"])
+        for operation in ("write", "create", "unlink"):
+            self.assertFalse(mine.has_access(operation), operation)
+        # a restriction (no group) whose domain binds the reader's group alone
+        group = self.env.ref("datlay_connector.group_reader")
+        restriction = self.env["ir.access"].search([("name", "=", dc.RULE_PREFIX + "ir.model.data"), ("group_id", "=", False)])
+        self.assertIn("%d in user.all_group_ids.ids" % group.id, restriction.domain)
+        # Odoo's own lookup by external id reads the table itself, for the reader as before
+        self.assertEqual(self.env(user=reader).ref("base.main_partner").id, self.env.ref("base.main_partner").id)
+        if "helpdesk.stage" in self.env:
+            # the row the platform asks for
+            (row,) = mine.search_read([("module", "=", "helpdesk"), ("name", "=", "stage_cancelled")], ["model", "res_id"])
+            self.assertEqual((row["model"], row["res_id"]), ("helpdesk.stage", self.env.ref("helpdesk.stage_cancelled").id))
+        # the rule binds the reader alone: an administrator of access rights reads every row, an internal user none
+        rights = new_test_user(self.env, login="datlay_rights", groups="base.group_user,base.group_erp_manager")
+        self.assertEqual(Data.with_user(rights).search([("id", "in", theirs.ids)]), theirs)
+        clerk = new_test_user(self.env, login="datlay_clerk7", groups="base.group_user")
+        self.assertFalse(Data.with_user(clerk).has_access("read"))
+
+    def test_72_the_reader_reads_the_deadlines_and_the_facts_beside_them(self):
+        """Spec 465 D3: a document's deadline, its delivery, receipt and invoice status, its source and team, a deal's
+        probability and lost reason, a ticket's priority and SLA verdict, a company's currency: each on this version"""
+        reader = self._reader()
+        for model, names in DEADLINE_FIELDS.items():
+            if model not in self.env:
+                continue
+            fields = self.env[model]._fields
+            missing = [n for n in names if n not in fields]
+            self.assertFalse(missing, "%s has no %s on this version" % (model, missing))
+            # a field closed by its groups refuses the read itself, whatever the records
+            self.env[model].with_user(reader).search_read([], [n for n in names if n in fields], limit=1, load=None)
+        partner = self.env["res.partner"].create({"name": "Deadlines"})
+        self._reads_as_the_administrator(reader, self.env.company, DEADLINE_FIELDS["res.company"])
+        if "crm.lead" in self.env:
+            lead = self.env["crm.lead"].create({
+                "name": "Deal",
+                "type": "opportunity",
+                "partner_id": partner.id,
+                "date_deadline": "2026-12-01",
+                "probability": 40,
+                "source_id": self.env["utm.source"].create({"name": "Datlay fair"}).id,
+                "team_id": self.env["crm.team"].create({"name": "Datlay north"}).id,
+                "lost_reason_id": self.env["crm.lost.reason"].create({"name": "Datlay too dear"}).id,
+            })
+            (row,) = self._reads_as_the_administrator(reader, lead, DEADLINE_FIELDS["crm.lead"])
+            self.assertEqual(str(row["date_deadline"]), "2026-12-01")
+            self.assertEqual((row["source_id"], row["team_id"], row["lost_reason_id"]), (lead.source_id.id, lead.team_id.id, lead.lost_reason_id.id))
+        if "sale.order" in self.env:
+            order = self.env["sale.order"].create({
+                "partner_id": partner.id,
+                "validity_date": "2026-12-01",
+                "commitment_date": "2026-12-10 09:00:00",
+                "source_id": self.env["utm.source"].create({"name": "Datlay web"}).id,
+                "team_id": self.env["crm.team"].create({"name": "Datlay south"}).id,
+            })
+            names = [n for n in DEADLINE_FIELDS["sale.order"] if n in order._fields]
+            (row,) = self._reads_as_the_administrator(reader, order, names)
+            self.assertEqual((str(row["validity_date"]), row["source_id"], row["team_id"]), ("2026-12-01", order.source_id.id, order.team_id.id))
+            self.assertTrue(row["commitment_date"])
+        if "purchase.order" in self.env:
+            purchase = self.env["purchase.order"].create({"partner_id": partner.id, "date_planned": "2026-12-05 09:00:00"})
+            names = [n for n in DEADLINE_FIELDS["purchase.order"] if n in purchase._fields]
+            self._reads_as_the_administrator(reader, purchase, names)
+        journal = self.env["account.journal"].search([("type", "=", "sale"), ("company_id", "=", self.env.company.id)], limit=1) if "account.move" in self.env else None
+        if journal:
+            invoice = self.env["account.move"].create({
+                "move_type": "out_invoice", "partner_id": partner.id, "journal_id": journal.id,
+                "invoice_date": "2026-11-01", "invoice_date_due": "2026-12-01",
+            })
+            (row,) = self._reads_as_the_administrator(reader, invoice, DEADLINE_FIELDS["account.move"])
+            self.assertTrue(row["invoice_date_due"])
+        if "helpdesk.ticket" in self.env:
+            team = self.env["helpdesk.team"].create({"name": "Support"})
+            ticket = self.env["helpdesk.ticket"].create({"name": "Broken", "team_id": team.id, "priority": "2", "partner_id": partner.id})
+            (row,) = self._reads_as_the_administrator(reader, ticket, DEADLINE_FIELDS["helpdesk.ticket"])
+            self.assertEqual((row["team_id"], row["priority"]), (team.id, "2"))
+
+    def test_73_the_reader_reads_the_purchase_behind_a_waiting_mo(self):
+        """Spec 465 D14 (Alex 11-11): an MO's component move, its product as an id, its quantities and state, and the
+        purchase line it was bought by, with that line's product id, quantities, expected arrival and state"""
+        if "mrp.production" not in self.env or "created_purchase_line_ids" not in self.env["stock.move"]._fields:
+            self.skipTest("manufacturing or purchases with inventory is not installed")
+        reader = self._reader()
+        table = self.env["product.product"].create({"name": "Table", "type": "consu"})
+        leg = self.env["product.product"].create({"name": "Leg", "type": "consu"})
+        mo = self.env["mrp.production"].create({"product_id": table.id, "product_qty": 1, "uom_id": table.uom_id.id})
+        purchase = self.env["purchase.order"].create({
+            "partner_id": self.env["res.partner"].create({"name": "Vendor"}).id,
+            "order_line": [Command.create({
+                "product_id": leg.id, "product_qty": 4, "uom_id": leg.uom_id.id, "date_planned": "2026-12-01 09:00:00",
+            })],
+        })
+        line = purchase.order_line
+        move = self.env["stock.move"].create({
+            "product_id": leg.id,
+            "product_uom_qty": 4,
+            "location_id": mo.location_src_id.id,
+            "location_dest_id": mo.production_location_id.id,
+            "raw_material_production_id": mo.id,
+            "created_purchase_line_ids": [Command.set(line.ids)],
+        })
+        moves = self.env["stock.move"].with_user(reader)
+        self.assertFalse(moves.has_access("write"))
+        (row,) = moves.search_read([("raw_material_production_id", "=", mo.id)], list(MOVE_FIELDS), load=None)
+        self.assertEqual(row["id"], move.id)
+        # the product as an id, never its name
+        self.assertEqual(row["product_id"], leg.id)
+        self.assertEqual((row["raw_material_production_id"], row["created_purchase_line_ids"]), (mo.id, line.ids))
+        self.assertEqual((row["product_uom_qty"], row["quantity"], row["state"]), (4, 0, move.state))
+        lines = self.env["purchase.order.line"].with_user(reader)
+        self.assertFalse(lines.has_access("write"))
+        (row,) = lines.search_read([("id", "=", line.id)], list(PURCHASE_LINE_FIELDS), load=None)
+        self.assertEqual((row["product_id"], row["product_qty"], row["qty_received"], row["state"]), (leg.id, 4, 0, "draft"))
+        self.assertEqual(row["date_planned"], line.date_planned)
+
+    def test_74_an_update_gives_the_reader_the_new_rights_at_once(self):
+        """the end migration of this version syncs the reader's rights: a database updated to it reads the new tables
+        without waiting for the daily job (a base and mail module cannot see CRM or Helpdesk after its own update)"""
+        reader = self._reader()
+        group = self.env.ref("datlay_connector.group_reader")
+        ir_model_data = self.env["ir.model"]._get_id("ir.model.data")
+        self.env["ir.access"].search([("group_id", "=", group.id), ("model_id", "=", ir_model_data)]).unlink()
+        self.env["ir.access"].search([("name", "=", dc.RULE_PREFIX + "ir.model.data"), ("group_id", "=", False)]).unlink()
+        self.assertFalse(self.env["ir.model.data"].with_user(reader).has_access("read"))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(dc.__file__)))
+        spec = importlib.util.spec_from_file_location("datlay_end_migrate", os.path.join(root, "migrations", MIGRATION, "end-migrate.py"))
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        script.migrate(self.env.cr, "20.0.1.1.1")
+        self.env.invalidate_all()
+        self.assertTrue(self.env["ir.model.data"].with_user(reader).has_access("read"))
+        self.assertTrue(self.env["ir.access"].search([("name", "=", dc.RULE_PREFIX + "ir.model.data"), ("group_id", "=", False)]))
+        self.assertFalse(self.env["ir.model.data"].with_user(reader).search_count([("model", "=", "res.partner")]))
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 
