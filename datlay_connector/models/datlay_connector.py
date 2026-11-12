@@ -72,6 +72,18 @@ READ_MODELS = (
     "procurement.group",
     "stock.reference",
     "helpdesk.stage",
+    # spec 465 D14 (Alex 11-11): the purchase behind a waiting MO. An MO's component moves, their product as an id,
+    # their quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name
+    "stock.move",
+    # spec 465 D3: the names of a deal's lost reason, a deal's or an order's source, a sales or a helpdesk team (names
+    # only, kept with the connection like the status labels; helpdesk is Enterprise)
+    "crm.lost.reason",
+    "utm.source",
+    "crm.team",
+    "helpdesk.team",
+    # spec 465 D8.2: Odoo's own Cancelled stage of helpdesk is known by its external id (``helpdesk.stage_cancelled``);
+    # the reader reads the external ids of helpdesk stages and of no other model (READER_RULES)
+    "ir.model.data",
 )
 #: D7: the documents whose history is read, and their status fields (453: an MO's components readiness too)
 HISTORY_OF = (
@@ -114,6 +126,9 @@ READER_RULES = {
     "project.task.type": [("user_id", "=", False)],
     # helpdesk_ticket_user_rule hides a team its members are invited to (Enterprise)
     "helpdesk.ticket": [(1, "=", 1)],
+    # spec 465 D8.2: a helpdesk stage's external id, never another model's (a module's records, a user's groups). Odoo
+    # reads the table itself as superuser (env.ref, an external id's lookup), and no other user is bound by this rule
+    "ir.model.data": [("model", "=", "helpdesk.stage")],
 }
 #: D5: never an employee's record, a contract, a payslip or an expense, which Odoo lets an internal user read in part
 NEVER_READ = (
