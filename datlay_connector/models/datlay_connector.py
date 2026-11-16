@@ -73,7 +73,10 @@ READ_MODELS = (
     "stock.reference",
     "helpdesk.stage",
     # spec 465 D14 (Alex 11-11): the purchase behind a waiting MO. An MO's component moves, their product as an id,
-    # their quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name
+    # their quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name.
+    # Spec 484 D2 (the margin of a month): a move to or from a customer, its sale line, day, locations, the move it
+    # returns and whether the system refunds it, its transfer, and the value the stock put on it (from 19 the move keeps
+    # it, `value` with `is_in` and `is_out`; to 18 its layers did)
     "stock.move",
     # spec 465 D3: the names of a deal's lost reason, a deal's or an order's source, a sales or a helpdesk team (names
     # only, kept with the connection like the status labels; helpdesk is Enterprise)

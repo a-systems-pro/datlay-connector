@@ -3,7 +3,9 @@ up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's
 cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
 project and no private one, no person's own stage, no timesheet line, an MO and its history. Spec 465b: the names of
 reasons, sources and teams, helpdesk stages' external ids and no other, the deadlines on the documents, and the purchase
-behind a waiting MO (D14), ids and numbers only."""
+behind a waiting MO (D14), ids and numbers only. Spec 484a: what the margin of a month counts, a sale
+line's quantities, money, own cost and stored margin, a move to or from a customer with the value the stock put on it,
+a transfer's carrier price."""
 
 import importlib.util
 import json
@@ -42,6 +44,20 @@ WITH_INVENTORY = ("delivery_status", "receipt_status")
 #: spec 465 D14: a component move and the purchase line it waits on, ids and numbers only
 MOVE_FIELDS = ("raw_material_production_id", "product_id", "product_uom_qty", "quantity", "state", "created_purchase_line_ids")
 PURCHASE_LINE_FIELDS = ("product_id", "product_qty", "qty_received", "date_planned", "state")
+#: spec 484 D2: what the margin of a month reads: a sale line's ids, quantities and money (its own cost and the margin
+#: stored on it are sale_margin's), a move to or from a customer with the value the stock put on it (from 19 the move's
+#: own `value`, `is_in` and `is_out`), a transfer's carrier price
+MARGIN_FIELDS = {
+    "sale.order.line": (
+        "order_id", "product_id", "product_type", "product_uom_qty", "qty_delivered", "price_subtotal", "purchase_price",
+        "margin", "is_delivery", "is_downpayment", "state", "currency_id", "company_id", "create_date", "write_date",
+    ),
+    "stock.move": (
+        "sale_line_id", "date", "location_id", "location_dest_id", "origin_returned_move_id", "to_refund", "picking_id",
+        "product_id", "quantity", "state", "value", "is_in", "is_out", "write_date",
+    ),
+    "stock.picking": ("carrier_price", "sale_id", "picking_type_code", "date_done"),
+}
 #: the version whose end migration gives an installed database the reader's new rights at its update
 MIGRATION = "19.0.1.2.0"
 
@@ -621,6 +637,41 @@ class TestDatlayConnector(TransactionCase):
         self.assertTrue(self.env["ir.model.data"].with_user(reader).has_access("read"))
         self.assertTrue(self.env["ir.rule"].search([("name", "=", dc.RULE_PREFIX + "ir.model.data")]))
         self.assertFalse(self.env["ir.model.data"].with_user(reader).search_count([("model", "=", "res.partner")]))
+
+    def test_80_the_reader_reads_what_the_margin_of_a_month_counts(self):
+        """Spec 484 D2: a sale line's quantities, money, own cost and stored margin; a move to its customer, its sale line,
+        day, locations, return and refund, transfer, and the value the stock put on it (the move's own from 19); a
+        transfer's carrier price: each as the administrator reads it, ids and numbers only"""
+        if "stock.move" not in self.env or "purchase_price" not in self.env["sale.order.line"]._fields:
+            self.skipTest("sales with inventory and margins are not installed")
+        reader = self._reader()
+        for model, names in MARGIN_FIELDS.items():
+            fields = self.env[model]._fields
+            missing = [n for n in names if n not in fields and not (n == "carrier_price" and "delivery.carrier" not in self.env)]
+            self.assertFalse(missing, "%s has no %s on this version" % (model, missing))
+            # a field closed by its groups refuses the read itself, whatever the records
+            self.env[model].with_user(reader).search_read([], [n for n in names if n in fields], limit=1, load=None)
+        product = self.env["product.product"].create({"name": "Margin goods", "type": "consu", "is_storable": True, "standard_price": 40.0, "list_price": 100.0})
+        stock = self.env["stock.warehouse"].search([("company_id", "=", self.env.company.id)], limit=1).lot_stock_id
+        self.env["stock.quant"].with_context(inventory_mode=True).create({"product_id": product.id, "location_id": stock.id, "inventory_quantity": 5}).action_apply_inventory()
+        order = self.env["sale.order"].create({
+            "partner_id": self.env["res.partner"].create({"name": "Margin customer"}).id,
+            "order_line": [Command.create({"product_id": product.id, "product_uom_qty": 2, "price_unit": 100.0})],
+        })
+        order.action_confirm()
+        picking = order.picking_ids
+        for move in picking.move_ids:
+            move.quantity = move.product_uom_qty
+            move.picked = True
+        picking._action_done()
+        (line,) = self._reads_as_the_administrator(reader, order.order_line, MARGIN_FIELDS["sale.order.line"])
+        self.assertEqual((line["product_uom_qty"], line["qty_delivered"], line["price_subtotal"], line["purchase_price"]), (2.0, 2.0, 200.0, 40.0))
+        (move,) = self._reads_as_the_administrator(reader, picking.move_ids, MARGIN_FIELDS["stock.move"])
+        self.assertEqual((move["sale_line_id"], move["quantity"], move["is_out"], move["is_in"]), (order.order_line.id, 2.0, True, False))
+        self.assertEqual(abs(move["value"]), 80.0)
+        names = [n for n in MARGIN_FIELDS["stock.picking"] if n in picking._fields]
+        (row,) = self._reads_as_the_administrator(reader, picking, names)
+        self.assertEqual(row["sale_id"], order.id)
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 
