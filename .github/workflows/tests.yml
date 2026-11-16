@@ -17,8 +17,9 @@ env:
   DEPENDS: ""
   # the apps whose documents Datlay reads, and HR, which it never reads, installed beside it for the reader's rights;
   # spec 453: manufacturing, projects and timesheets (helpdesk is Enterprise, checked on its stand); spec 484: a line's
-  # own cost and margin (sale_margin), a transfer's carrier price (delivery, stock_delivery)
-  WITH: sale_management,purchase,stock,crm,account,hr,mrp,sale_mrp,project,sale_timesheet,sale_margin,delivery,stock_delivery
+  # own cost and margin (sale_margin), a transfer's carrier price (delivery, stock_delivery); spec 481 P4: the batches
+  # (stock_picking_batch, part of stock from 20)
+  WITH: sale_management,purchase,stock,crm,account,hr,mrp,sale_mrp,project,sale_timesheet,sale_margin,delivery,stock_delivery,stock_picking_batch
 
 jobs:
   odoo:
