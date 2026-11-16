@@ -3,7 +3,8 @@ up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's
 cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
 project and no private one, no person's own stage, no timesheet line, an MO and its history. Spec 465b: the names of
 reasons, sources and teams, helpdesk stages' external ids and no other, the deadlines on the documents, and the purchase
-behind a waiting MO (D14), ids and numbers only."""
+behind a waiting MO (D14), ids and numbers only. Spec 484a: what the margin of a month counts, a sale line's quantities,
+money, own cost and stored margin, a move to or from a customer, the value on its layers, a transfer's carrier price."""
 
 import importlib.util
 import json
@@ -45,8 +46,22 @@ MOVE_FIELDS = (
     "created_production_id", "group_id",
 )
 PURCHASE_LINE_FIELDS = ("product_id", "product_qty", "qty_received", "date_planned", "state")
+#: spec 484 D2: what the margin of a month reads: a sale line's ids, quantities and money (its own cost and the margin
+#: stored on it are sale_margin's), a move to or from a customer, the value on its layers, a transfer's carrier price
+MARGIN_FIELDS = {
+    "sale.order.line": (
+        "order_id", "product_id", "product_type", "product_uom_qty", "qty_delivered", "price_subtotal", "purchase_price",
+        "margin", "is_delivery", "is_downpayment", "state", "currency_id", "company_id", "create_date", "write_date",
+    ),
+    "stock.move": (
+        "sale_line_id", "date", "location_id", "location_dest_id", "origin_returned_move_id", "to_refund", "picking_id",
+        "product_id", "quantity", "state", "write_date",
+    ),
+    "stock.valuation.layer": ("stock_move_id", "value", "quantity", "company_id", "create_date"),
+    "stock.picking": ("carrier_price", "sale_id", "picking_type_code", "date_done"),
+}
 #: the version whose end migration gives an installed database the reader's new rights at its update
-MIGRATION = "17.0.1.3.0"
+MIGRATION = "17.0.1.4.0"
 
 
 @tagged("post_install", "-at_install")
@@ -661,6 +676,67 @@ class TestDatlayConnector(TransactionCase):
         self.assertTrue(self.env["ir.model.data"].with_user(reader).check_access_rights("read", raise_exception=False))
         self.assertTrue(self.env["ir.rule"].search([("name", "=", dc.RULE_PREFIX + "ir.model.data")]))
         self.assertFalse(self.env["ir.model.data"].with_user(reader).search_count([("model", "=", "res.partner")]))
+
+    def _delivered_order(self):
+        """an order of two storable goods valued at 40 each, delivered to its customer: its line, its move, its layer"""
+        product = self.env["product.product"].create({"name": "Margin goods", "type": "product", "standard_price": 40.0, "list_price": 100.0})
+        stock = self.env["stock.warehouse"].search([("company_id", "=", self.env.company.id)], limit=1).lot_stock_id
+        self.env["stock.quant"].with_context(inventory_mode=True).create({"product_id": product.id, "location_id": stock.id, "inventory_quantity": 5}).action_apply_inventory()
+        order = self.env["sale.order"].create({
+            "partner_id": self.env["res.partner"].create({"name": "Margin customer"}).id,
+            "order_line": [Command.create({"product_id": product.id, "product_uom_qty": 2, "price_unit": 100.0})],
+        })
+        order.action_confirm()
+        picking = order.picking_ids
+        for move in picking.move_ids:
+            move.quantity = move.product_uom_qty
+            move.picked = True
+        picking._action_done()
+        return order, picking
+
+    def test_80_the_reader_reads_what_the_margin_of_a_month_counts(self):
+        """Spec 484 D2: a sale line's quantities, money, own cost and stored margin; a move to its customer, its sale line,
+        day, locations, return and refund, transfer; the value the stock put on it, on its layer; a transfer's carrier
+        price: each as the administrator reads it, ids and numbers only"""
+        if "stock.valuation.layer" not in self.env or "purchase_price" not in self.env["sale.order.line"]._fields:
+            self.skipTest("sales with inventory valuation and margins are not installed")
+        reader = self._reader()
+        for model, names in MARGIN_FIELDS.items():
+            fields = self.env[model]._fields
+            missing = [n for n in names if n not in fields and not (n == "carrier_price" and "delivery.carrier" not in self.env)]
+            self.assertFalse(missing, "%s has no %s on this version" % (model, missing))
+            # a field closed by its groups refuses the read itself, whatever the records
+            self.env[model].with_user(reader).search_read([], [n for n in names if n in fields], limit=1, load=None)
+        order, picking = self._delivered_order()
+        (line,) = self._reads_as_the_administrator(reader, order.order_line, MARGIN_FIELDS["sale.order.line"])
+        self.assertEqual((line["product_uom_qty"], line["qty_delivered"], line["price_subtotal"], line["purchase_price"]), (2.0, 2.0, 200.0, 40.0))
+        (move,) = self._reads_as_the_administrator(reader, picking.move_ids, MARGIN_FIELDS["stock.move"])
+        self.assertEqual((move["sale_line_id"], move["quantity"]), (order.order_line.id, 2.0))
+        layers = self.env["stock.valuation.layer"].search([("stock_move_id", "in", picking.move_ids.ids)])
+        self.assertTrue(layers)
+        rows = self._reads_as_the_administrator(reader, layers, MARGIN_FIELDS["stock.valuation.layer"])
+        self.assertEqual(sum(r["value"] for r in rows), -80.0)
+        names = [n for n in MARGIN_FIELDS["stock.picking"] if n in picking._fields]
+        (row,) = self._reads_as_the_administrator(reader, picking, names)
+        self.assertEqual(row["sale_id"], order.id)
+
+    def test_81_an_update_gives_the_reader_the_layers_at_once(self):
+        """Spec 484a: the end migration of 17.0.1.4.0 gives a database updated to it the valuation layers at once"""
+        if "stock.valuation.layer" not in self.env:
+            self.skipTest("inventory valuation is not installed")
+        reader = self._reader()
+        group = self.env.ref("datlay_connector.group_reader")
+        layers = self.env["ir.model"]._get_id("stock.valuation.layer")
+        self.env["ir.model.access"].search([("group_id", "=", group.id), ("model_id", "=", layers)]).unlink()
+        self.assertFalse(self.env["stock.valuation.layer"].with_user(reader).check_access_rights("read", raise_exception=False))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(dc.__file__)))
+        spec = importlib.util.spec_from_file_location("datlay_end_migrate_484a", os.path.join(root, "migrations", MIGRATION, "end-migrate.py"))
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        script.migrate(self.env.cr, "17.0.1.3.0")
+        self.env.invalidate_all()
+        self.assertTrue(self.env["stock.valuation.layer"].with_user(reader).check_access_rights("read", raise_exception=False))
+        self.assertFalse(self.env["stock.valuation.layer"].with_user(reader).check_access_rights("write", raise_exception=False))
 
     # -------------------------------------------------------------- uninstall (TC-329-01)
 

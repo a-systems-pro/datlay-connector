@@ -74,8 +74,13 @@ READ_MODELS = (
     # spec 453c: to 18 an MO's own procurement group names no order; the moves it was made for do, by their group (an
     # order's delivery, or a parent MO's component). Spec 465 D14 (Alex 11-11) lifts 453c's "never its product or
     # quantity": an MO's component moves are read for the purchase behind the wait, their product as an id, their
-    # quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name
+    # quantities and state and the purchase lines they were bought by. Ids and numbers, never a product's name. Spec 484
+    # D2 (the margin of a month): a move to or from a customer, its sale line, day, locations, the move it returns and
+    # whether the system refunds it, its transfer
     "stock.move",
+    # spec 484 D2: the value the stock put on a move, on its layers (14 to 18; 19 keeps it on the move): the layer's
+    # move, value, quantity and day, never its description
+    "stock.valuation.layer",
     # spec 465 D3: the names of a deal's lost reason, a deal's or an order's source, a sales or a helpdesk team (names
     # only, kept with the connection like the status labels; helpdesk is Enterprise)
     "crm.lost.reason",
