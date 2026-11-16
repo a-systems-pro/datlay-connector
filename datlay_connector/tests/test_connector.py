@@ -799,3 +799,34 @@ class TestDatlayConnector(TransactionCase):
         group = self.env.ref("datlay_connector.group_reader")
         self.assertFalse(self.env["ir.access"].with_context(active_test=False).search([("group_id", "=", group.id)]))
 
+
+    def test_82_the_reader_reads_what_the_margins_cuts_and_ledger_read(self):
+        """Spec 484b D7 and 484c D5: a product's category with its name, an order's customer's commercial partner, an
+        account's code, name and kind, a posted journal item's account, balance, day and state: each as the administrator
+        reads it. The module grants none of the product, the partner or the account (Odoo lets every internal user read
+        them), and the journal items through its list, kept to the journals it reads"""
+        if not self.env["account.journal"].search([("type", "=", "sale"), ("company_id", "=", self.env.company.id)], limit=1):
+            self.skipTest("no sale journal: no chart of accounts on this database")
+        reader = self._reader()
+        category = self.env["product.category"].create({"name": "Cuts category"})
+        product = self.env["product.product"].create({"name": "Cuts goods", "categ_id": category.id, "list_price": 100.0})
+        # a category comes with its name, as the administrator reads it (a many2one's name is read by Odoo itself)
+        domain = [("id", "=", product.id)]
+        mine = self.env["product.product"].with_user(reader).search_read(domain, ["categ_id"])
+        self.assertEqual(mine, product.search_read(domain, ["categ_id"]))
+        self.assertEqual(mine[0]["categ_id"][0], category.id)
+        company = self.env["res.partner"].create({"name": "Cuts company", "is_company": True})
+        contact = self.env["res.partner"].create({"name": "Cuts contact", "parent_id": company.id})
+        (row,) = self._reads_as_the_administrator(reader, contact, ["commercial_partner_id"])
+        self.assertEqual(row["commercial_partner_id"], company.id)
+        invoice = self.env["account.move"].create({
+            "move_type": "out_invoice",
+            "partner_id": contact.id,
+            "invoice_line_ids": [Command.create({"product_id": product.id, "quantity": 1, "price_unit": 100.0})],
+        })
+        invoice.action_post()
+        rows = self._reads_as_the_administrator(reader, invoice.line_ids, ["account_id", "balance", "date", "parent_state", "write_date"])
+        self.assertTrue(all(r["parent_state"] == "posted" for r in rows))
+        self.assertAlmostEqual(sum(r["balance"] for r in rows), 0.0, places=2)
+        accounts = self._reads_as_the_administrator(reader, invoice.line_ids.account_id, ["code", "name", "account_type"])
+        self.assertIn("income", {a["account_type"] for a in accounts})
