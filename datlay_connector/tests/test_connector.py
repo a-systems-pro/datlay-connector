@@ -4,7 +4,9 @@ cannot create, write or unlink a document, and reads the history of D5's documen
 project and no private one, no person's own stage, no timesheet line, an MO and its history. Spec 465b: the names of
 reasons, sources and teams, helpdesk stages' external ids and no other, the deadlines on the documents, and the purchase
 behind a waiting MO (D14), ids and numbers only. Spec 484a: what the margin of a month counts, a sale line's quantities,
-money, own cost and stored margin, a move to or from a customer, the value on its layers, a transfer's carrier price."""
+money, own cost and stored margin, a move to or from a customer, the value on its layers, a transfer's carrier price.
+Spec 481 P4: a transfer's lines and its batch, the history of the batch's state, and the other fields the warehouse is
+read by (a transfer's deadline, a purchase line's price, a location's parent and place, a warehouse's stock)."""
 
 import importlib.util
 import json
@@ -62,6 +64,25 @@ MARGIN_FIELDS = {
 }
 #: the version whose end migration gives an installed database the reader's new rights at its update
 MIGRATION = "17.0.1.4.0"
+
+#: spec 481 D40 (P4, the reader takes the warehouse): a transfer's lines as ids and quantities, a batch and its making,
+#: a transfer's batch and deadline, a purchase line's price and how it is received, a location's parent and place (to 18),
+#: a warehouse's stock; a field a version lacks is left out by name (a purchase line's discount, a location's place)
+WAREHOUSE_FIELDS = {
+    "stock.move.line": (
+        "picking_id", "move_id", "product_id", "quantity", "location_id", "location_dest_id", "package_id", "result_package_id",
+        "date", "state", "write_date",
+    ),
+    "stock.picking.batch": ("state", "picking_type_id", "company_id", "picking_ids", "create_date", "create_uid", "write_date"),
+    "stock.picking": ("batch_id", "date_deadline"),
+    "purchase.order.line": ("price_unit", "discount", "qty_received_method"),
+    "stock.location": ("location_id", "posx", "posy", "posz", "write_date"),
+    "stock.warehouse": ("lot_stock_id",),
+}
+#: what a version may lack of WAREHOUSE_FIELDS: a purchase line's discount (before 17), a location's place (from 19)
+MAY_LACK = ("discount", "posx", "posy", "posz")
+#: the version whose end migration gives an installed database the warehouse (spec 481 P4)
+MIGRATION_P4 = "17.0.1.5.0"
 
 
 @tagged("post_install", "-at_install")
@@ -784,3 +805,110 @@ class TestDatlayConnector(TransactionCase):
         self.assertAlmostEqual(sum(r["balance"] for r in rows), 0.0, places=2)
         accounts = self._reads_as_the_administrator(reader, invoice.line_ids.account_id, ["code", "name", "account_type"])
         self.assertIn("income", {a["account_type"] for a in accounts})
+
+    # -------------------------------------------------------------- spec 481 P4: the warehouse is read
+
+    def _delivered_in_a_batch(self):
+        """an order of two storable goods delivered from the stock, its transfer in a batch started then done (no batch
+        where the database has none), each step's tracked values written as its own commit would write them (Odoo
+        tracks no change of a record made in the same transaction)"""
+        product = self.env["product.product"].create({"name": "Warehouse goods", "type": "product", "list_price": 10.0})
+        stock = self.env["stock.warehouse"].search([("company_id", "=", self.env.company.id)], limit=1).lot_stock_id
+        self.env["stock.quant"].with_context(inventory_mode=True).create({"product_id": product.id, "location_id": stock.id, "inventory_quantity": 5}).action_apply_inventory()
+        order = self.env["sale.order"].create({
+            "partner_id": self.env["res.partner"].create({"name": "Warehouse customer"}).id,
+            "order_line": [Command.create({"product_id": product.id, "product_uom_qty": 2, "price_unit": 10.0})],
+        })
+        order.action_confirm()
+        picking = order.picking_ids
+        batch = None
+        if "stock.picking.batch" in self.env:
+            batch = self.env["stock.picking.batch"].create({"picking_ids": [Command.set(picking.ids)]})
+            self._as_committed()
+            batch.action_confirm()
+            self._as_committed()
+        for move in picking.move_ids:
+            move.quantity = move.product_uom_qty
+            move.picked = True
+        picking._action_done()
+        self._as_committed()
+        return product, picking, batch
+
+    def _as_committed(self):
+        """what a commit writes before it commits (the tracked values), written now in the test's transaction"""
+        self.env.flush_all()
+        self.env.cr.precommit.run()
+
+    def _present(self, model, names):
+        """the fields of WAREHOUSE_FIELDS this version has; one it should have and lacks fails the test"""
+        fields = self.env[model]._fields
+        missing = [n for n in names if n not in fields and n not in MAY_LACK]
+        self.assertFalse(missing, "%s has no %s on this version" % (model, missing))
+        return [n for n in names if n in fields]
+
+    def test_83_the_reader_reads_a_transfers_lines_and_its_batch(self):
+        """Spec 481 D40: a transfer's lines (ids and quantities), its batch and the history of the batch's state, a
+        transfer's deadline, a purchase line's price and how it is received, a location's parent and place, a warehouse's
+        stock: each as the administrator reads it, never a lot's or a line's name"""
+        if "sale.order" not in self.env or "purchase.order" not in self.env:
+            self.skipTest("sales, purchases and inventory are not installed")
+        reader = self._reader()
+        product, picking, batch = self._delivered_in_a_batch()
+        lines = self._reads_as_the_administrator(reader, picking.move_line_ids, self._present("stock.move.line", WAREHOUSE_FIELDS["stock.move.line"]))
+        self.assertEqual(sum(row["quantity"] for row in lines), 2.0)
+        self.assertEqual({row["picking_id"] for row in lines}, {picking.id})
+        (row,) = self._reads_as_the_administrator(reader, picking, self._present("stock.picking", WAREHOUSE_FIELDS["stock.picking"]))
+        self.assertTrue(row["date_deadline"])
+        warehouse = self.env["stock.warehouse"].search([("company_id", "=", self.env.company.id)], limit=1)
+        (row,) = self._reads_as_the_administrator(reader, warehouse, WAREHOUSE_FIELDS["stock.warehouse"])
+        self.assertEqual(row["lot_stock_id"], warehouse.lot_stock_id.id)
+        (row,) = self._reads_as_the_administrator(reader, warehouse.lot_stock_id, self._present("stock.location", WAREHOUSE_FIELDS["stock.location"]))
+        self.assertEqual(row["location_id"], warehouse.view_location_id.id)
+        purchase = self.env["purchase.order"].create({
+            "partner_id": self.env["res.partner"].create({"name": "Warehouse vendor"}).id,
+            "order_line": [Command.create({"product_id": product.id, "product_qty": 3, "price_unit": 7.0})],
+        })
+        (row,) = self._reads_as_the_administrator(reader, purchase.order_line, self._present("purchase.order.line", WAREHOUSE_FIELDS["purchase.order.line"]))
+        self.assertEqual((row["price_unit"], row["qty_received_method"]), (7.0, "stock_moves"))
+        if batch is None:
+            return
+        self.assertEqual(batch.state, "done")
+        (row,) = self._reads_as_the_administrator(reader, batch, WAREHOUSE_FIELDS["stock.picking.batch"])
+        self.assertEqual(row["picking_ids"], picking.ids)
+        (row,) = self._reads_as_the_administrator(reader, picking, ["batch_id"])
+        self.assertEqual(row["batch_id"], batch.id)
+        # the batch's state is tracked: started (draft to in progress) and done, each read by the reader
+        tracked = self.env["mail.tracking.value"].sudo().search([
+            ("mail_message_id.model", "=", "stock.picking.batch"), ("mail_message_id.res_id", "=", batch.id), ("field_id.name", "=", "state"),
+        ])
+        self.assertEqual(len(tracked), 2)
+        self.assertEqual(self.env["mail.tracking.value"].with_user(reader).search([("id", "in", tracked.ids)]), tracked)
+        messages = tracked.mail_message_id
+        self.assertEqual(self.env["mail.message"].with_user(reader).search([("id", "in", messages.ids)]), messages)
+
+    def test_84_an_update_gives_the_reader_the_warehouse_at_once(self):
+        """Spec 481 P4: the end migration of MIGRATION_P4 gives a database updated to it a transfer's lines, the batches
+        and a batch's history at once (Inventory and its batches load after this base and mail module)"""
+        reader = self._reader()
+        group = self.env.ref("datlay_connector.group_reader")
+        models = [m for m in ("stock.move.line", "stock.picking.batch") if m in self.env]
+        if not models:
+            self.skipTest("inventory is not installed")
+        for model in models:
+            self.env["ir.model.access"].search([("group_id", "=", group.id), ("model_id", "=", self.env["ir.model"]._get_id(model))]).unlink()
+        history = self.env["ir.rule"].search([("name", "in", [dc.RULE_PREFIX + "mail.tracking.value", dc.RULE_PREFIX + "mail.message"])])
+        self.assertEqual(len(history), 2)
+        for rule in history:
+            rule.domain_force = rule.domain_force.replace(", 'stock.picking.batch'", "")
+        if "stock.picking.batch" in self.env:
+            self.assertFalse(self.env["stock.picking.batch"].with_user(reader).check_access_rights("read", raise_exception=False))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(dc.__file__)))
+        spec = importlib.util.spec_from_file_location("datlay_end_migrate_481p4", os.path.join(root, "migrations", MIGRATION_P4, "end-migrate.py"))
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        script.migrate(self.env.cr, "17.0.1.4.0")
+        self.env.invalidate_all()
+        for model in models:
+            self.assertTrue(self.env[model].with_user(reader).check_access_rights("read", raise_exception=False), model)
+        for rule in history:
+            self.assertIn("'stock.picking.batch'", rule.domain_force)
