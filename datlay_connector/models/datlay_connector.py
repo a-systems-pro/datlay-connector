@@ -87,6 +87,13 @@ READ_MODELS = (
     # spec 465 D8.2: Odoo's own Cancelled stage of helpdesk is known by its external id (``helpdesk.stage_cancelled``);
     # the reader reads the external ids of helpdesk stages and of no other model (READER_RULES)
     "ir.model.data",
+    # spec 481 D40 (P4, the reader takes the warehouse): a transfer's lines, ids and quantities only (its transfer, move,
+    # product, quantity done, both locations and packages, day and state), never a lot, an owner, a line's name or its
+    # description; and a batch of transfers, its state, operation type, company and making, never its name or
+    # description. The batch is ``stock_picking_batch``'s to 19 and ``stock``'s own on 20; a database without it skips
+    # it, as every model of the list, and the daily sync reads it once the app is installed
+    "stock.move.line",
+    "stock.picking.batch",
 )
 #: D7: the documents whose history is read, and their status fields (453: an MO's components readiness too)
 HISTORY_OF = (
@@ -99,6 +106,8 @@ HISTORY_OF = (
     "project.task",
     "mrp.production",
     "helpdesk.ticket",
+    # spec 481 D40: a batch's state, so who started a walk and when (a batch is no document of D5: its own history only)
+    "stock.picking.batch",
 )
 STATUS_FIELDS = ("state", "payment_state", "stage_id", "active", "won_status", "lost_reason", "lost_reason_id", "reservation_state")
 #: D3, spec 9.11: the journals read; payroll and miscellaneous ones (``general``) never
