@@ -18,7 +18,7 @@ once, as a subquery of the search, so no message is checked one by one and a dat
 subquery per model. The rule binds the reader's group alone; no other user's reads change.
 """
 
-from odoo import fields, models
+from odoo import api, fields, models
 from odoo.fields import Domain
 
 from .datlay_connector import HISTORY_OF
@@ -47,10 +47,14 @@ class MailTrackingValue(models.Model):
         messages = Domain.OR(per_model) & Domain("message_type", "!=", "user_notification")
         return Domain("mail_message_id", "any!", messages)
 
+    # the value is the current user's: without the uid in its cache key, a value computed for one user (an
+    # administrator) would be served to the reader's access check in the same transaction (/code-review 11-22)
+    @api.depends_context("uid")
     def _compute_datlay_message_readable(self):
         readable = self.sudo().search(Domain("id", "in", self.ids) & self._datlay_readable())
+        readable_ids = set(readable.ids)
         for value in self:
-            value.datlay_message_readable = value.id in readable.ids
+            value.datlay_message_readable = value.id in readable_ids
 
     def _search_datlay_message_readable(self, operator, value):
         if operator in ("=", "!="):

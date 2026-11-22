@@ -330,6 +330,26 @@ class TestDatlayConnector(TransactionCase):
         # nobody else is bound: the administrator reads both
         self.assertEqual(self.env["mail.tracking.value"].search([("id", "in", both.ids)]), both)
 
+    def test_19b_a_value_computed_for_another_user_is_never_the_readers(self):
+        """/code-review 2026-11-22: ``datlay_message_readable`` is the current user's (``depends_context("uid")``). A
+        value computed for the administrator earlier in the same transaction is never served to the reader's access
+        check, whichever way that check reads the rule's field"""
+        if "project.task" not in self.env:
+            self.skipTest("projects are not installed")
+        reader = self._reader()
+        admin = self.env.ref("base.user_admin")
+        hidden = self.env["project.task"].create({"name": "The administrator's own", "project_id": False, "user_ids": [(6, 0, admin.ids)]})
+        value = self._tracked(hidden, "stage_id")
+        # the administrator reads its own private task's history first: True, now in the transaction's cache
+        self.assertTrue(value.with_user(admin).datlay_message_readable)
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        self.assertFalse(self.env["project.task"].with_user(reader).search([("id", "=", hidden.id)]))
+        self.assertFalse(Tracking.search([("id", "=", value.id)]))
+        with self.assertRaises(AccessError):
+            Tracking.browse(value.id).read(["new_value_char"])
+        # and the other way: the reader's False is never the administrator's
+        self.assertTrue(value.with_user(admin).datlay_message_readable)
+
     def test_21_the_history_follows_each_documents_own_rules(self):
         """329 §9 item 20: whether a tracked value is read is its document's question, as Odoo asks it of a message: a
         payroll or miscellaneous entry's posting stays hidden (the reader's journal rule), a lost deal's stays read
