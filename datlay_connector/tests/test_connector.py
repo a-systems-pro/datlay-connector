@@ -1,6 +1,7 @@
 """Spec 329 T-8 on Odoo 17.0: TC-329-01 (the reader made, the tenant seen before anything is made, uninstall cleans
 up), TC-329-02 (another tenant's code shows that tenant; no address but Datlay's), TC-329-08 (the reader's group
-cannot create, write or unlink a document, and reads the history of D5's documents only). Spec 453 T-5: tasks of every
+cannot create, write or unlink a document, and reads the history of D5's documents only, never of a document it cannot
+read: 329 §9 item 20). Spec 453 T-5: tasks of every
 project and no private one, no person's own stage, no timesheet line, an MO and its history. Spec 465b: the names of
 reasons, sources and teams, helpdesk stages' external ids and no other, the deadlines on the documents, and the purchase
 behind a waiting MO (D14), ids and numbers only. Spec 484a: what the margin of a month counts, a sale line's quantities,
@@ -11,11 +12,13 @@ read by (a transfer's deadline, a purchase line's price, a location's parent and
 import importlib.util
 import json
 import os
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
-from odoo import Command
+from odoo import Command, fields
 from odoo.exceptions import AccessError, UserError
 from odoo.tests.common import TransactionCase, new_test_user, tagged
+from odoo.tools import SQL
 
 from odoo.addons.datlay_connector.models import datlay_connector as dc
 
@@ -83,6 +86,10 @@ WAREHOUSE_FIELDS = {
 MAY_LACK = ("discount", "posx", "posy", "posz")
 #: the version whose end migration gives an installed database the warehouse (spec 481 P4)
 MIGRATION_P4 = "17.0.1.5.0"
+#: the version whose end migration keeps the reader's history to messages it may read (329 §9 item 20)
+MIGRATION_HISTORY = "17.0.1.6.0"
+#: status changes enough to pass Odoo 20's 10,000 messages (``MAX_SEARCH_LIMIT``, which 17 and 19 do not have)
+MANY = 10_100
 
 
 @tagged("post_install", "-at_install")
@@ -285,6 +292,69 @@ class TestDatlayConnector(TransactionCase):
             self.assertNotIn("general", by_model[model].domain_force)
             self.assertIn("journal_id.type", by_model[model].domain_force)
             self.assertEqual(by_model[model].groups, self.env.ref("datlay_connector.group_reader"))
+
+    def _tracked(self, record, name, old="New", new="Done"):
+        """one status change of ``record``: a message of its own with one tracked value, made by the administrator"""
+        message = self.env["mail.message"].sudo().create({"model": record._name, "res_id": record.id, "message_type": "notification"})
+        return self.env["mail.tracking.value"].sudo().create({
+            "field_id": self.env["ir.model.fields"]._get(record._name, name).id,
+            "mail_message_id": message.id,
+            "old_value_char": old,
+            "new_value_char": new,
+        })
+
+    def test_19_the_reader_reads_no_history_of_a_document_it_cannot_read(self):
+        """329b review, 329 §9 item 20 on 17.0: a tracked value is read through its message, and a message through its
+        document (the reader's rule names ``datlay_message_readable``, as 20.0's names ``("mail_message_id", "access",
+        "read")``): a private task's stage stays hidden, however it is asked"""
+        if "project.task" not in self.env:
+            self.skipTest("projects are not installed")
+        reader = self._reader()
+        project = self.env["project.project"].create({"name": "Datlay Seen"})
+        seen = self.env["project.task"].create({"name": "In a project", "project_id": project.id})
+        hidden = self.env["project.task"].create({"name": "A person's own", "project_id": False})
+        self.assertFalse(self.env["project.task"].with_user(reader).search([("id", "=", hidden.id)]))
+        values = {task: self._tracked(task, "stage_id") for task in (seen, hidden)}
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        self.assertEqual(Tracking.search([("id", "=", values[seen].id)]), values[seen])
+        self.assertFalse(Tracking.search([("id", "=", values[hidden].id)]))
+        self.assertFalse(self.env["mail.message"].with_user(reader).search([("model", "=", "project.task"), ("res_id", "=", hidden.id)]))
+        # a group rule holds on every way in, not only a search: by id, counted and grouped
+        both = values[seen] | values[hidden]
+        self.assertEqual(Tracking.search_count([("id", "in", both.ids)]), 1)
+        self.assertEqual(Tracking.browse(values[seen].id).read(["new_value_char"])[0]["new_value_char"], "Done")
+        with self.assertRaises(AccessError):
+            Tracking.browse(values[hidden].id).read(["new_value_char"])
+        self.assertEqual(Tracking._read_group([("id", "in", both.ids)], ["field_id"], ["__count"])[0][1], 1)
+        # the platform's two scopes of the history, by the message's model and by the tracked field's
+        for scope in ("mail_message_id.model", "field_id.model"):
+            rows = Tracking.search_read([(scope, "in", list(dc.HISTORY_OF)), ("id", "in", both.ids)], ["new_value_char"])
+            self.assertEqual([row["id"] for row in rows], values[seen].ids, scope)
+        # nobody else is bound: the administrator reads both
+        self.assertEqual(self.env["mail.tracking.value"].search([("id", "in", both.ids)]), both)
+
+    def test_21_the_history_follows_each_documents_own_rules(self):
+        """329 §9 item 20: whether a tracked value is read is its document's question, as Odoo asks it of a message: a
+        payroll or miscellaneous entry's posting stays hidden (the reader's journal rule), a lost deal's stays read
+        (an archived document is still the reader's, as its message is)"""
+        reader = self._reader()
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        if "account.move" in self.env:
+            payroll = self.env["account.journal"].create({"name": "Datlay Payroll", "type": "general", "code": "DLPY"})
+            sales = self.env["account.journal"].create({"name": "Datlay Sales", "type": "sale", "code": "DLSL"})
+            entry = self.env["account.move"].create({"move_type": "entry", "journal_id": payroll.id})
+            invoice = self.env["account.move"].create({"move_type": "entry", "journal_id": sales.id})
+            self.assertFalse(self.env["account.move"].with_user(reader).search([("id", "=", entry.id)]))
+            self.assertEqual(self.env["account.move"].with_user(reader).search([("id", "=", invoice.id)]), invoice)
+            self.assertFalse(Tracking.search([("id", "=", self._tracked(entry, "state", "draft", "posted").id)]))
+            shown = self._tracked(invoice, "state", "draft", "posted")
+            self.assertEqual(Tracking.search([("id", "=", shown.id)]), shown)
+        if "crm.lead" in self.env:
+            lead = self.env["crm.lead"].create({"name": "Datlay Lost"})
+            lead.active = False
+            self.assertEqual(self.env["crm.lead"].with_user(reader).with_context(active_test=False).search([("id", "=", lead.id)]), lead)
+            lost = self._tracked(lead, "active", "True", "False")
+            self.assertEqual(Tracking.search([("id", "=", lost.id)]), lost)
 
     def test_14_a_company_made_later_joins_the_reader(self):
         reader = self._reader()
@@ -517,6 +587,76 @@ class TestDatlayConnector(TransactionCase):
         self.assertEqual(self.env["mrp.production"].with_user(reader).search([("procurement_group_id", "=", own.id)]), mo)
         groups = self.env["procurement.group"].with_user(reader).search_read([("id", "=", group.id)], ["sale_id"], load=None)
         self.assertEqual(groups, [{"id": group.id, "sale_id": order.id}])
+
+    # -------------------------------------------------------------- 329 §9 items 20, 21: a database of many messages
+
+    def _bulk_history(self, record, field, count):
+        """``count`` status changes of ``record``, each a message of its own with one tracked value, written in one
+        statement (the ORM takes minutes for that many), by the administrator: never the reader's own messages"""
+        self.env.flush_all()
+        self.env.cr.execute(SQL(
+            """
+            WITH message AS (
+                INSERT INTO mail_message (model, res_id, message_type, author_id, date,
+                                          create_uid, create_date, write_uid, write_date)
+                SELECT %(model)s, %(res_id)s, 'notification', %(author)s, %(now)s, %(uid)s, %(now)s, %(uid)s, %(now)s
+                  FROM generate_series(1, %(count)s)
+                RETURNING id
+            )
+            INSERT INTO mail_tracking_value (field_id, mail_message_id, old_value_char, new_value_char,
+                                             create_uid, create_date, write_uid, write_date)
+            SELECT %(field)s, id, 'old', 'new', %(uid)s, %(now)s, %(uid)s, %(now)s FROM message
+            RETURNING id
+            """,
+            model=record._name, res_id=record.id, author=self.env.user.partner_id.id, uid=self.env.uid,
+            now=fields.Datetime.now(), count=count, field=field.id,
+        ))
+        ids = sorted(row[0] for row in self.env.cr.fetchall())
+        self.env.invalidate_all()
+        return self.env["mail.tracking.value"].browse(ids)
+
+    def test_60_the_history_is_read_on_a_database_of_many_messages(self):
+        """20.0's test of a database past 10,000 messages, on 17: the reader's history rule asks each document model in
+        SQL, so every search the platform sends reads the same rows on both of its scopes, all of them, and none of a
+        document the reader cannot read (17 has no limit of its own on a message search)"""
+        if "sale.order" not in self.env or "project.task" not in self.env:
+            self.skipTest("sales or projects are not installed")
+        reader = self._reader()
+        since = fields.Datetime.now() - timedelta(minutes=1)
+        order = self.env["sale.order"].create({"partner_id": self.env["res.partner"].create({"name": "Many"}).id})
+        state = self.env["ir.model.fields"]._get("sale.order", "state")
+        # the pages start where a run before them stopped: demo data (17 installs it) is history of its own
+        before = max(self.env["mail.tracking.value"].search([], order="id desc", limit=1).ids or [0])
+        shown = self._bulk_history(order, state, MANY)
+        # a person's own task: its history never reaches the reader, however many messages are around it
+        private = self.env["project.task"].create({"name": "Mine", "project_id": False})
+        stage = self.env["ir.model.fields"]._get("project.task", "stage_id")
+        hidden = self._bulk_history(private, stage, 3)
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        asked = ["field_id", "old_value_char", "new_value_char", "mail_message_id", "create_date"]
+        for scope in ("mail_message_id.model", "field_id.model"):
+            with self.subTest(scope=scope):
+                kept = [(scope, "in", list(dc.HISTORY_OF))]
+                # the platform's first question: where the history starts
+                self.assertTrue(Tracking.search_read(kept, ["create_date"], limit=1, order="id asc"))
+                domain = kept + [("field_id", "in", [state.id, stage.id]), ("create_date", ">=", since)]
+                # its pages, 500 rows each, by the tracking row's id
+                read, cursor = [], before
+                while True:
+                    rows = Tracking.search_read(domain + [("id", ">", cursor)], asked, limit=500, order="id asc")
+                    read += [row["id"] for row in rows]
+                    if len(rows) < 500:
+                        break
+                    cursor = rows[-1]["id"]
+                self.assertEqual(read, shown.ids)
+                self.assertFalse(set(read) & set(hidden.ids))
+                self.assertEqual(Tracking.search_count(domain + [("id", ">", before)]), MANY)
+        # the messages of a page, by id, kept to D5's documents as the platform keeps them
+        messages = shown[:200].mapped("mail_message_id") | hidden.mapped("mail_message_id")
+        got = self.env["mail.message"].with_user(reader).search_read(
+            [("model", "in", list(dc.HISTORY_OF)), ("id", "in", messages.ids)], ["model", "res_id", "author_id", "date"],
+        )
+        self.assertEqual(sorted(m["id"] for m in got), shown[:200].mapped("mail_message_id").ids)
 
     # -------------------------------------------------------------- spec 465b: the deadlines are read
 
@@ -912,3 +1052,25 @@ class TestDatlayConnector(TransactionCase):
             self.assertTrue(self.env[model].with_user(reader).check_access_rights("read", raise_exception=False), model)
         for rule in history:
             self.assertIn("'stock.picking.batch'", rule.domain_force)
+
+    def test_85_an_update_keeps_the_readers_history_to_what_it_may_read_at_once(self):
+        """329 §9 item 20: the end migration of MIGRATION_HISTORY gives a database updated to it the history rule that
+        reads a tracked value only through a message the reader may read, without waiting for the daily job"""
+        if "project.task" not in self.env:
+            self.skipTest("projects are not installed")
+        reader = self._reader()
+        rule = self.env["ir.rule"].search([("name", "=", dc.RULE_PREFIX + "mail.tracking.value")])
+        self.assertIn("datlay_message_readable", rule.domain_force)
+        # the rule as 17.0.1.5.0 left it
+        rule.domain_force = repr([("mail_message_id.model", "in", list(dc.HISTORY_OF)), ("field_id.name", "in", list(dc.STATUS_FIELDS))])
+        value = self._tracked(self.env["project.task"].create({"name": "A person's own", "project_id": False}), "stage_id")
+        Tracking = self.env["mail.tracking.value"].with_user(reader)
+        self.assertEqual(Tracking.search([("id", "=", value.id)]), value)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(dc.__file__)))
+        spec = importlib.util.spec_from_file_location("datlay_end_migrate_history", os.path.join(root, "migrations", MIGRATION_HISTORY, "end-migrate.py"))
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        script.migrate(self.env.cr, "17.0.1.5.0")
+        self.env.invalidate_all()
+        self.assertIn("datlay_message_readable", rule.domain_force)
+        self.assertFalse(Tracking.search([("id", "=", value.id)]))
