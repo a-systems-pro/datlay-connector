@@ -1,0 +1,67 @@
+name: release
+
+# 329 D14 (T15): each release is a signed tag, and this refuses an unsigned one. A tag named by the manifest's version
+# (17.0.1.6.0) is checked before anything is built: an annotated tag signed by a key in .github/allowed_signers as its
+# series branch holds it (only a pull request changes that branch, so a tag cannot bring its own key), its commit on
+# that branch, the manifest's version equal to the tag. Then the module's zip, made by git archive from the tag, and
+# its SHA-256 go on the tag's release. Odoo checks no signature when installing, so the published hash is what a
+# client can check. A tag that fails gets no release. A tag's push runs this file as the tagged commit holds it, so
+# only an administrator creates a release tag (the repository's tag ruleset), always on its series branch.
+on:
+  push:
+    tags: ["[0-9][0-9].0.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Signed release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MODULE: datlay_connector
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: The tag is signed by the release key and sits on its series branch
+        run: |
+          set -euo pipefail
+          series="${TAG:0:4}"
+          # the signed tag object as pushed, and the series branch as GitHub holds it
+          git fetch --force --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/$series:refs/remotes/origin/$series"
+          if [ "$(git cat-file -t "$TAG")" != tag ]; then
+            echo "::error::$TAG is not an annotated, signed tag"; exit 1
+          fi
+          if ! git show "origin/$series:.github/allowed_signers" > "$RUNNER_TEMP/allowed_signers" 2>/dev/null; then
+            echo "::error::$series holds no .github/allowed_signers"; exit 1
+          fi
+          # the exit code, and the principal named: a key outside the file is "No principal matched", never "for"
+          if ! git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" tag -v "$TAG" 2> "$RUNNER_TEMP/verify" \
+            || ! grep -q '^Good "git" signature for datlay-connector-release with ' "$RUNNER_TEMP/verify"; then
+            cat "$RUNNER_TEMP/verify"
+            echo "::error::$TAG is not signed by a key in .github/allowed_signers on $series"; exit 1
+          fi
+          cat "$RUNNER_TEMP/verify"
+          if ! git merge-base --is-ancestor "$TAG^{commit}" "origin/$series"; then
+            echo "::error::$TAG is not on $series"; exit 1
+          fi
+          version=$(git show "$TAG:$MODULE/__manifest__.py" | python3 -c "import ast, sys; print(ast.literal_eval(sys.stdin.read())['version'])")
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::the tag is $TAG, the manifest says $version"; exit 1
+          fi
+
+      - name: The zip and its SHA-256 on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zip="$MODULE-$TAG.zip"
+          git archive --format=zip --output="$zip" "$TAG" "$MODULE"
+          sha256sum "$zip" > "$zip.sha256"
+          cat "$zip.sha256"
+          gh release create "$TAG" "$zip" "$zip.sha256" --verify-tag --title "$MODULE $TAG" \
+            --notes "Signed tag $TAG, commit $(git rev-parse --short "$TAG^{commit}"). SHA-256 of $zip: $(cut -d' ' -f1 "$zip.sha256")"
