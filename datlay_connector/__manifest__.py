@@ -4,7 +4,7 @@
         "Connects this Odoo to Datlay: an administrator's key, or a Datlay reader that "
         "reads the documents and their history and cannot change them."
     ),
-    "version": "19.0.1.3.0",
+    "version": "19.0.1.4.0",
     "category": "Productivity",
     "author": "Rteam",
     "maintainer": "Rteam",

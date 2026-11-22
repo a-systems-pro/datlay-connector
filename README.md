@@ -11,7 +11,8 @@ What it does in your Odoo, and nothing else:
   reads only the documents and their history with it), or the **Datlay reader**: a user the module makes in a group of
   its own that reads sales, purchases, transfers, invoices, payments, deals, tasks, manufacturing orders and helpdesk
   tickets and their history, and cannot create, change or delete them. It never reads a timesheet line, a private task
-  or a person's own stage. On Odoo Enterprise the reader takes one paid user.
+  or a person's own stage, nor the history of a document it cannot read. On Odoo Enterprise the reader takes one paid
+  user.
 - **Calls one address only:** `https://connect.datlay.io`, certificates checked. There is no setting to change it.
 - **Renews the key in one click** (Settings > Datlay > Renew the key). The old key is deleted only once Datlay took
   the new one.
@@ -21,6 +22,16 @@ It holds none of your data. The Datlay reader can still post a message, plan an 
 internal Odoo user can; Datlay never does.
 
 Derived from Rteam's AI Analytic Assistant module (its API key issuing and its CI). LGPL-3.
+
+## The reader's history
+
+Odoo lets only an administrator read tracked values (`mail.tracking.value`) as such; any other user sees them inside a
+message, and a message only of a document they can read. The reader is given tracked values to read, so its rule keeps
+them to the same: a value is read only through a message the reader may read. Odoo 20 can say that in a rule (the
+`access` condition). On 17 and 19 a rule is evaluated as superuser and cannot ask the document, so the rule names
+`datlay_message_readable`, a field that is never stored and is only searched with the reader's own rights, one SQL
+subquery per document model (`models/mail_tracking_value.py`): a private task's stage or a payroll entry's posting stays
+hidden, a lost deal's history is read, and nobody else's reads change.
 
 ## Tests
 

@@ -120,6 +120,10 @@ READER_RULES = {
     "mail.tracking.value": [
         ("mail_message_id.model", "in", list(HISTORY_OF)),
         ("field_id.name", "in", list(STATUS_FIELDS)),
+        # 329 §9 item 20: a tracked value is read only through a message the reader may read, so never of a document
+        # it cannot read (a payroll entry, a private task); a rule of 19 is evaluated as superuser and cannot ask the
+        # document, so this searched field does it with the reader's rights (models/mail_tracking_value.py)
+        ("datlay_message_readable", "=", True),
     ],
     "account.move": [("journal_id.type", "in", list(JOURNAL_TYPES))],
     "account.move.line": [("journal_id.type", "in", list(JOURNAL_TYPES))],
