@@ -5,7 +5,8 @@ name: release
 # series branch holds it (only a pull request changes that branch, so a tag cannot bring its own key), its commit on
 # that branch, the manifest's version equal to the tag. Then the module's zip, made by git archive from the tag, and
 # its SHA-256 go on the tag's release. Odoo checks no signature when installing, so the published hash is what a
-# client can check. A tag that fails gets no release.
+# client can check. A tag that fails gets no release. A tag's push runs this file as the tagged commit holds it, so
+# only an administrator creates a release tag (the repository's tag ruleset), always on its series branch.
 on:
   push:
     tags: ["[0-9][0-9].0.*"]
@@ -35,7 +36,9 @@ jobs:
           if [ "$(git cat-file -t "$TAG")" != tag ]; then
             echo "::error::$TAG is not an annotated, signed tag"; exit 1
           fi
-          git show "origin/$series:.github/allowed_signers" > "$RUNNER_TEMP/allowed_signers"
+          if ! git show "origin/$series:.github/allowed_signers" > "$RUNNER_TEMP/allowed_signers" 2>/dev/null; then
+            echo "::error::$series holds no .github/allowed_signers"; exit 1
+          fi
           # the exit code, and the principal named: a key outside the file is "No principal matched", never "for"
           if ! git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" tag -v "$TAG" 2> "$RUNNER_TEMP/verify" \
             || ! grep -q '^Good "git" signature for datlay-connector-release with ' "$RUNNER_TEMP/verify"; then
