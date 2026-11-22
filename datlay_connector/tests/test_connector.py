@@ -326,6 +326,8 @@ class TestDatlayConnector(TransactionCase):
         with self.assertRaises(AccessError):
             Tracking.browse(values[hidden].id).read(["new_value_char"])
         self.assertEqual(Tracking._read_group([("id", "in", both.ids)], ["field_id"], ["__count"])[0][1], 1)
+        # the rule's field read as a value, as an export of every field asks it
+        self.assertTrue(Tracking.browse(values[seen].id).datlay_message_readable)
         # the platform's two scopes of the history, by the message's model and by the tracked field's
         for scope in ("mail_message_id.model", "field_id.model"):
             rows = Tracking.search_read([(scope, "in", list(dc.HISTORY_OF)), ("id", "in", both.ids)], ["new_value_char"])
