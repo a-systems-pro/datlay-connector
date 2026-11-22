@@ -3,14 +3,15 @@
 # rights are checked on their real models, and runs the module's tests; the
 # Odoo series comes from the manifest version. Datlay is a mock in the tests:
 # nothing calls connect.datlay.io. From the odoo-skills template, the same rule
-# as its scripts/stand.sh.
+# as its scripts/stand.sh. It runs on every series branch (14.0 to 20.0, one pattern), and holds the manifest's
+# external_dependencies empty: the module has no third-party Python dependency (426 D15).
 name: tests
 
 on:
   push:
-    branches: ["17.0", "19.0"]
+    branches: ["[0-9][0-9].0"]
   pull_request:
-    branches: ["17.0", "19.0"]
+    branches: ["[0-9][0-9].0"]
 
 env:
   MODULE: datlay_connector
@@ -47,6 +48,17 @@ jobs:
           series=$(python3 -c "import ast; print(ast.literal_eval(open('addons/$MODULE/__manifest__.py').read())['version'][:4])")
           echo "SERIES=$series" >> "$GITHUB_ENV"
           echo "Odoo $series"
+
+      - name: No third-party Python dependency (426 D15)
+        run: |
+          python3 - <<'PY'
+          import ast, os, sys
+          manifest = ast.literal_eval(open(f"addons/{os.environ['MODULE']}/__manifest__.py").read())
+          held = {k: v for k, v in (manifest.get("external_dependencies") or {}).items() if v}
+          if held:
+              print(f"::error::external_dependencies must stay empty, it holds {held}")
+              sys.exit(1)
+          PY
 
       - name: Checkout Odoo
         uses: actions/checkout@v5
