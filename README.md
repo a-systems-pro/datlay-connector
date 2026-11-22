@@ -30,3 +30,16 @@ Derived from Rteam's AI Analytic Assistant module (its API key issuing and its C
 Project and Timesheets on a fresh
 database and runs its tests; Datlay is a mock there. Locally: `odoo-skills/scripts/stand.sh test 20.0
 datlay_connector,sale_management,purchase,stock,crm,account . --tags /datlay_connector` (`--enterprise` for helpdesk).
+
+## Releases
+
+Each release is a tag named by the manifest's version (`17.0.1.6.0`), signed with Datlay's release key, whose public
+half is `.github/allowed_signers`. On a signed tag CI builds the module's zip from the tag and puts it on the release
+with its SHA-256; a tag that is not signed by that key gets no release. Odoo checks no signature when it installs a
+module, so check the zip before you install it: `sha256sum datlay_connector-17.0.1.6.0.zip` gives the same value as
+the release. From a clone, `git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v
+17.0.1.6.0` checks the tag.
+
+The series branches take changes only through a pull request with CI green, and are never deleted or force-pushed.
+CI holds no secret and scans every push for one (`.github/workflows/secrets.yml`), and the module has no third-party
+Python dependency. `scripts/release.sh <series>` signs and pushes a release.

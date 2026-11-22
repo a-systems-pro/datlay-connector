@@ -1,0 +1,5 @@
+# The keys a release tag of datlay_connector may be signed with (329 D14, T15): ssh-keygen's allowed signers format.
+# The release workflow reads this file from the series branch, never from the tag, and the series branches take
+# changes only through a pull request with CI green, so a tag cannot bring a key of its own.
+# Fingerprint SHA256:/NJrD9UxbnBJ2s8yfXzGpyNZU/kMSMXpLgkWCEFNweI
+datlay-connector-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEwYLEfsY4D+/wW8gO6Flo5ox1SbW1bm9g4WiDg6dutT
